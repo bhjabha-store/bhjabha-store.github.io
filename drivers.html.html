@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>بوابة المندوبين متجر بحجابها</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+:root{
+  --wine:#7C2D42; --wine-dark:#5E2233; --wine-soft:#F3E4E7; --gold:#C9A24B; --teal:#3E7C74;
+  --ink:#2B2620; --surface:#FBF7EF; --card:#FFFFFF;
+  --danger:#B3423F; --danger-soft:#F6E4E2;
+  --muted:#8B8378; --border:#E9E1D3; --text:#2B2620;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{background:var(--surface);color:var(--text);font-family:Tahoma,"Segoe UI","Noto Sans Arabic",Arial,sans-serif;direction:rtl;padding-bottom:30px;}
+.topbar{background:linear-gradient(135deg,var(--wine),var(--wine-dark));color:#fff;padding:calc(16px + env(safe-area-inset-top)) 18px 16px;text-align:center;}
+.topbar .store-name{font-size:18px;font-weight:800;}
+.topbar .store-sub{font-size:12px;opacity:.85;margin-top:2px;}
+.container{max-width:640px;margin:0 auto;padding:16px;}
+.section{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px;}
+.section-title{font-size:15px;font-weight:800;margin-bottom:4px;}
+.section-hint{font-size:12px;color:var(--muted);margin-bottom:12px;}
+.field{margin-bottom:10px;}
+.field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:4px;}
+.field input, .field select, .field textarea{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:14px;background:#FCFAF6;box-sizing:border-box;}
+.btn{padding:10px 16px;border:none;border-radius:9px;font-weight:700;cursor:pointer;font-size:13.5px;background:var(--wine);color:#fff;}
+.btn.secondary{background:var(--teal);}
+.btn.gold{background:var(--gold);}
+.btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--border);font-size:12px;padding:7px 12px;}
+.invoice-card{border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px;}
+.invoice-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.invoice-badge{background:var(--wine-soft);color:var(--wine-dark);border-radius:8px;padding:3px 10px;font-size:12px;font-weight:700;}
+.invoice-meta{font-size:12.5px;color:var(--muted);line-height:1.8;margin-bottom:8px;}
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:10px;}
+th{text-align:right;color:var(--muted);font-weight:700;font-size:11px;padding:6px;border-bottom:2px solid var(--border);}
+td{padding:6px;border-bottom:1px solid var(--border);}
+.total-line{display:flex;justify-content:space-between;font-weight:800;font-size:13.5px;margin:8px 0;}
+.actions-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+.actions-row .btn{flex:1;}
+.tag{display:inline-block;font-size:10.5px;padding:2px 8px;border-radius:20px;background:var(--wine-soft);color:var(--wine-dark);}
+.tag.done{background:#E4EEEB;color:var(--teal);}
+.loading{text-align:center;padding:40px;color:var(--muted);}
+.empty{text-align:center;padding:20px;color:var(--muted);font-size:13px;}
+.settle-box{background:#FBF7EF;border:1px dashed var(--border);border-radius:10px;padding:12px;margin-top:10px;}
+.qty-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12.5px;}
+.qty-row input{width:70px;padding:6px;border:1px solid var(--border);border-radius:6px;text-align:center;}
+.pay-line{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:12.5px;border-bottom:1px solid var(--border);}
+.pay-line button{background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="store-name">🚚 بوابة المندوبين متجر بحجابها</div>
+</div>
+<div class="container" id="mainContainer">
+  <div class="loading">جاري التحميل...</div>
+</div>
+
+<script>
+// ============ SUPABASE CONFIGURATION ============
+const SUPABASE_URL = "https://wgodzednsugquxfnhqiw.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_Ae_4_ZfZDnwtgGWuJ17B3g_a_CP34UZ";
+
+let supabaseClient = null;
+let courierData = { invoices: [], reps: [], companies: [] };
+let loggedInType = ""; // "rep" | "company"
+let loggedInName = "";
+let activeTab = "in_delivery"; // "in_delivery" | "delivered"
+let settlingId = null;
+let settleItems = [];
+let settlePayments = [];
+
+function esc(s){ return (s||"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmt(n){ return Number(n||0).toLocaleString("en-US",{maximumFractionDigits:2}); }
+function cityGroupLabel(g){ return g==="tripoli" ? "طرابلس" : "مدن أخرى"; }
+
+async function init(){
+  if(!SUPABASE_URL || !SUPABASE_ANON_KEY){
+    document.getElementById("mainContainer").innerHTML = `<div class="section"><div class="section-title">⚠ لم يتم إعداد البوابة بعد</div><div class="section-hint">صاحب المتجر يحتاج لصق رابط ومفتاح قاعدة البيانات في أعلى هذا الملف.</div></div>`;
+    return;
+  }
+  try{
+    supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    await loadInvoices();
+  }catch(e){
+    document.getElementById("mainContainer").innerHTML = `<div class="section"><div class="section-title">⚠ تعذّر الاتصال</div><div class="section-hint">${esc(e && e.message ? e.message : String(e))}</div></div>`;
+  }
+}
+async function loadInvoices(){
+  try{
+    const { data, error } = await supabaseClient.from("courier_invoices").select("data").eq("id","main").maybeSingle();
+    if(error) throw error;
+    const d = (data && data.data) ? data.data : { invoices: [], reps: [], companies: [] };
+    courierData = { invoices: d.invoices||[], reps: d.reps||[], companies: d.companies||[] };
+    render();
+  }catch(e){
+    document.getElementById("mainContainer").innerHTML = `<div class="section"><div class="section-title">⚠ تعذّر تحميل الطلبيات</div><div class="section-hint">${esc(e && e.message ? e.message : String(e))}</div></div>`;
+  }
+}
+
+function render(){
+  const el = document.getElementById("mainContainer");
+
+  if(!loggedInName){
+    el.innerHTML = `
+      <div class="section">
+        <div class="section-title">🔑 دخول المندوبين</div>
+        <div class="section-hint">أدخل رقمك السري المكوّن من 4 أرقام</div>
+        <div class="field"><input type="text" id="pinInput" maxlength="4" inputmode="numeric" placeholder="●●●●" style="text-align:center;font-size:20px;letter-spacing:6px;"></div>
+        <button class="btn gold" style="width:100%;" onclick="loginWithPin()">دخول</button>
+      </div>
+    `;
+    return;
+  }
+
+  const myInvoices = courierData.invoices.filter(i=> i.courierName===loggedInName && i.courierType==="rep");
+  const inDeliveryList = myInvoices.filter(i=>i.deliveryStage==="in_delivery");
+  const deliveredList = myInvoices.filter(i=>i.deliveryStage==="delivered");
+
+  const headerHtml = `
+    <div class="section" style="display:flex;justify-content:space-between;align-items:center;">
+      <div><div class="section-title" style="margin-bottom:2px;">👋 ${esc(loggedInName)}</div><div class="section-hint" style="margin:0;">مندوب</div></div>
+      <div style="display:flex;gap:6px;">
+        <button class="btn ghost" onclick="refreshData()">🔄 تحديث</button>
+        <button class="btn ghost" onclick="logout()">خروج</button>
+      </div>
+    </div>
+    <div class="section" style="display:flex;gap:8px;padding:8px;">
+      <button class="btn ${activeTab==='in_delivery'?'gold':'ghost'}" style="flex:1;" onclick="setTab('in_delivery')">🚚 قيد التوصيل (${inDeliveryList.length})</button>
+      <button class="btn ${activeTab==='delivered'?'gold':'ghost'}" style="flex:1;" onclick="setTab('delivered')">📦 المسلَّمة (${deliveredList.length})</button>
+    </div>
+    ${activeTab==="delivered" ? renderDeliveredTotals(deliveredList) : ""}`;
+
+  const listForTab = activeTab==="in_delivery" ? inDeliveryList : deliveredList;
+
+  if(!listForTab.length){
+    el.innerHTML = headerHtml + `<div class="empty">${activeTab==="in_delivery" ? "لا توجد طلبيات قيد التوصيل حالياً" : "لا توجد طلبيات مسلَّمة بانتظار المراجعة"}</div>`;
+    return;
+  }
+
+  const cardsHtml = listForTab.map(inv=>{
+    const totalQty = inv.items.reduce((s,it)=>s+(Number(it.qty)||0),0);
+    const itemsRows = inv.items.map(it=>`<tr><td>${esc(it.catName)}</td><td>${esc(it.color||"-")}</td><td>${fmt(it.price)}</td><td>${fmt(it.qty)}</td></tr>`).join("");
+    const settleBoxHtml = settlingId===inv.id ? renderSettleBox(inv) : "";
+    const deliveredSummaryHtml = (activeTab==="delivered" && settlingId!==inv.id) ? renderDeliveredSummary(inv) : "";
+    return `
+      <div class="invoice-card">
+        <div class="invoice-head">
+          <span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span>
+          ${activeTab==="delivered" ? `<span class="tag done">✅ تم التسليم</span>` : ""}
+        </div>
+        <div class="invoice-meta">
+          📅 ${esc(inv.date)}<br>
+          📞 ${esc(inv.phone1||"-")}${inv.phone2?" / "+esc(inv.phone2):""} <button class="btn ghost" style="padding:2px 8px;font-size:10.5px;" onclick="copyPhone('${esc(inv.phone1||"").replace(/'/g,"\\'")}')">📋 نسخ</button><br>
+          📍 ${inv.cityGroup==="other" && inv.otherCityName ? esc(inv.otherCityName)+" — ":""}${esc(inv.city||"-")}
+          ${inv.zone ? `<br>🗺 ${esc(inv.zone)}` : ""}
+          ${inv.notes ? `<br>📝 ${esc(inv.notes)}` : ""}
+        </div>
+        <table><thead><tr><th>الصنف</th><th>اللون</th><th>السعر</th><th>العدد</th></tr></thead><tbody>${itemsRows}</tbody></table>
+        <div class="total-line"><span>إجمالي عدد القطع: ${fmt(totalQty)}</span><span>${fmt(inv.totalAmount)}</span></div>
+        <div class="actions-row">
+          ${activeTab==="in_delivery" ? `<button class="btn gold" onclick="openSettle('${inv.id}')">${settlingId===inv.id?'✖ إغلاق':'✅ تسوية'}</button>` : ""}
+          ${activeTab==="delivered" ? `<button class="btn gold" onclick="openSettle('${inv.id}')">${settlingId===inv.id?'✖ إغلاق':'✏️ تعديل التسوية'}</button>` : ""}
+        </div>
+        ${settleBoxHtml}
+        ${deliveredSummaryHtml}
+      </div>`;
+  }).join("");
+
+  el.innerHTML = headerHtml + cardsHtml;
+}
+
+function renderDeliveredTotals(deliveredList){
+  if(!deliveredList.length) return "";
+  const totals = { cash:0, card:0, transfer:0 };
+  let returnedCount = 0;
+  deliveredList.forEach(inv=>{
+    const cr = inv.courierResolution;
+    if(!cr) return;
+    (cr.payments||[]).forEach(p=>{ if(totals[p.account]!==undefined) totals[p.account] += Number(p.amount)||0; });
+    inv.items.forEach(orig=>{
+      const claimed = cr.items.find(x=>x.catId===orig.catId && x.color===orig.color);
+      const soldQty = claimed ? claimed.soldQty : orig.qty;
+      returnedCount += Math.max(0, orig.qty - soldQty);
+    });
+  });
+  const grandTotal = totals.cash + totals.card + totals.transfer;
+  return `
+    <div class="section" style="background:#F3EEE3;">
+      <div class="section-title">💰 إجمالي كل الطلبيات المسلَّمة</div>
+      <div style="font-size:12.5px;line-height:2;">
+        كاش: <b>${fmt(totals.cash)}</b> — بطاقة مصرفية: <b>${fmt(totals.card)}</b> — حوالة: <b>${fmt(totals.transfer)}</b><br>
+        <b>الإجمالي الكلي المفروض تسليمه للمتجر: ${fmt(grandTotal)}</b><br>
+        📦 إجمالي عدد القطع المُرجعة: <b>${fmt(returnedCount)}</b>
+      </div>
+    </div>`;
+}
+function renderDeliveredSummary(inv){
+  const cr = inv.courierResolution;
+  if(!cr) return "";
+  const returned = inv.items.map(orig=>{
+    const claimed = cr.items.find(x=>x.catId===orig.catId && x.color===orig.color);
+    const soldQty = claimed ? claimed.soldQty : orig.qty;
+    const returnedQty = orig.qty - soldQty;
+    return returnedQty>0 ? `${orig.catName}${orig.color?" ("+orig.color+")":""}: ${fmt(returnedQty)}` : null;
+  }).filter(Boolean);
+  const payLines = (cr.payments||[]).map(p=>`${p.account==='cash'?'كاش':p.account==='card'?'بطاقة':'حوالة'}: ${fmt(p.amount)}`).join(" — ") || "لا يوجد";
+  return `
+    <div class="settle-box">
+      <div class="section-title" style="font-size:13px;">📋 ملخص ما سجّلته</div>
+      <div style="font-size:12.5px;margin:6px 0;"><b>الأصناف المُرجعة:</b> ${returned.length ? esc(returned.join("، ")) : "لا يوجد مرتجع"}</div>
+      <div style="font-size:12.5px;margin:6px 0;"><b>المبلغ المفروض تسليمه للمتجر:</b> ${esc(payLines)}</div>
+      <div style="font-size:12.5px;margin:6px 0;"><b>قيمة التوصيل:</b> ${fmt(cr.deliveryPriceFinal||0)}</div>
+    </div>`;
+}
+
+function setTab(tab){ activeTab = tab; render(); }
+function logout(){ loggedInName = ""; loggedInType = ""; settlingId = null; render(); }
+async function refreshData(){
+  await loadInvoices();
+}
+async function loginWithPin(){
+  const pin = (document.getElementById("pinInput").value||"").trim();
+  const rep = courierData.reps.find(r=>r.pin===pin);
+  if(!rep){ alert("رقم سري غير صحيح"); return; }
+  loggedInType = "rep"; loggedInName = rep.name; activeTab = "in_delivery";
+  render();
+}
+
+async function copyPhone(phone){
+  if(!phone){ return; }
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(phone);
+      alert("تم نسخ الرقم ✅");
+    } else {
+      throw new Error("no clipboard api");
+    }
+  }catch(e){
+    try{
+      const ta = document.createElement("textarea");
+      ta.value = phone; ta.style.position="fixed"; ta.style.opacity="0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      alert("تم نسخ الرقم ✅");
+    }catch(e2){
+      prompt("انسخ الرقم يدوياً:", phone);
+    }
+  }
+}
+
+function openSettle(invId){
+  if(settlingId===invId){ settlingId = null; render(); return; }
+  const inv = courierData.invoices.find(i=>i.id===invId);
+  if(!inv) return;
+  settlingId = invId;
+  const cr = inv.courierResolution;
+  settleItems = inv.items.map(it=>{
+    const claimed = cr ? cr.items.find(x=>x.catId===it.catId && x.color===it.color) : null;
+    return {catId:it.catId, catName:it.catName, color:it.color, price:it.price, qty:it.qty, soldQty: claimed ? claimed.soldQty : it.qty};
+  });
+  settlePayments = cr ? cr.payments.map(p=>Object.assign({}, p)) : [];
+  render();
+}
+function setSettleQty(idx, val){
+  const it = settleItems[idx];
+  let v = parseInt(val)||0;
+  if(v<0) v=0; if(v>it.qty) v=it.qty;
+  it.soldQty = v;
+  render();
+}
+function addSettlePayment(){
+  const account = document.getElementById("st_pay_account").value;
+  const amount = parseFloat(document.getElementById("st_pay_amount").value);
+  if(!amount || amount<=0){ alert("أدخل مبلغاً صحيحاً"); return; }
+  settlePayments.push({account, amount});
+  render();
+}
+function removeSettlePayment(idx){ settlePayments.splice(idx,1); render(); }
+
+function renderSettleBox(inv){
+  const soldTotal = settleItems.reduce((s,it)=>s+it.price*it.soldQty,0);
+  const paid = settlePayments.reduce((s,p)=>s+(Number(p.amount)||0),0);
+  const qtyRows = settleItems.map((it,i)=>`
+    <div class="qty-row">
+      <span>${esc(it.catName)}${it.color?" ("+esc(it.color)+")":""} — من ${fmt(it.qty)}</span>
+      <input type="number" min="0" max="${it.qty}" value="${it.soldQty}" onchange="setSettleQty(${i}, this.value)">
+    </div>`).join("");
+  const payLines = settlePayments.map((p,i)=>`
+    <div class="pay-line"><span>${p.account==='cash'?'كاش':p.account==='card'?'بطاقة':'حوالة'} — ${fmt(p.amount)}</span><button onclick="removeSettlePayment(${i})">✖</button></div>`
+  ).join("") || `<div class="section-hint" style="margin:6px 0;">لم تُضف طريقة دفع بعد</div>`;
+  return `
+    <div class="settle-box">
+      <div class="section-title" style="font-size:13px;">الكمية المُباعة فعلياً من كل صنف</div>
+      ${qtyRows}
+      <div class="total-line" style="margin-top:8px;"><span>إجمالي المبيعات</span><span>${fmt(soldTotal)}</span></div>
+
+      <div class="section-title" style="font-size:13px;margin-top:12px;">طريقة استلام المبلغ</div>
+      <div class="field" style="display:flex;gap:6px;">
+        <select id="st_pay_account" style="flex:1;">
+          <option value="cash">كاش</option>
+          <option value="card">بطاقة مصرفية</option>
+          <option value="transfer">حوالة</option>
+        </select>
+        <input type="number" id="st_pay_amount" placeholder="المبلغ" style="flex:1;">
+      </div>
+      <button class="btn secondary" style="width:100%;margin-bottom:8px;" onclick="addSettlePayment()">➕ أضف طريقة دفع</button>
+      ${payLines}
+      <div class="total-line"><span>إجمالي المستلم</span><span>${fmt(paid)}</span></div>
+
+      <div class="field" style="margin-top:10px;">
+        <label>قيمة التوصيل</label>
+        <input type="number" id="st_delivery_price" value="${inv.courierResolution ? (inv.courierResolution.deliveryPriceFinal||0) : (inv.deliveryPrice||0)}">
+      </div>
+      <button class="btn gold" style="width:100%;" onclick="submitSettlement('${inv.id}')">✅ إرسال التسوية</button>
+    </div>`;
+}
+
+async function submitSettlement(invId){
+  const deliveryPriceFinal = parseFloat(document.getElementById("st_delivery_price").value)||0;
+  const settlementData = {
+    items: settleItems.map(it=>({catId:it.catId, color:it.color, soldQty:it.soldQty, price:it.price})),
+    payments: settlePayments.slice(),
+    deliveryPriceFinal
+  };
+  try{
+    const id = "cs_" + Date.now() + Math.random().toString(36).slice(2,8);
+    const { error } = await supabaseClient.from("courier_settlements").insert({ id, invoice_id: invId, settlement_data: settlementData, status: "new" });
+    if(error) throw error;
+    const inv = courierData.invoices.find(i=>i.id===invId);
+    if(inv){
+      inv.deliveryStage = "delivered";
+      inv.courierResolution = { items: settlementData.items, payments: settlementData.payments, deliveryPriceFinal: settlementData.deliveryPriceFinal };
+    }
+    settlingId = null;
+    activeTab = "delivered";
+    render();
+    alert("تم إرسال التسوية بنجاح ✅ سيراجعها صاحب المتجر قريباً");
+  }catch(e){
+    alert("تعذّر إرسال التسوية: " + (e && e.message ? e.message : e));
+  }
+}
+
+init();
+</script>
+</body>
+</html>
