@@ -4084,13 +4084,15 @@ async function importCustomerOrder(orderId){
   if(!items.length){ alert("لا توجد أصناف صالحة في هذا الطلب"); return; }
   const cityGroup = od.cityGroup==="tripoli" || od.cityGroup==="other" ? od.cityGroup : cityGroupOf(od.city||"");
   const otherCityName = cityGroup==="other" ? (od.otherCityName||"") : "";
+  const zone = cityGroup==="tripoli" ? (od.zone||"") : "";
+  const otherZone = cityGroup==="other" ? (od.otherZone||"") : "";
   const number = cityGroup==="tripoli" ? state.nextPendingInvoiceNoTripoli++ : state.nextPendingInvoiceNoOther++;
   const totalAmount = items.reduce((s,it)=>s+it.total,0);
   const check = checkPendingStockAvailability(items);
   const invoice = {
     id:"pdinv_"+Math.random().toString(36).slice(2), number, cityGroup,
-    date: todayStr(), phone1: od.phone1||"", phone2: od.phone2||"", city: od.city||"", otherCityName, notes: "طلب من المتجر الإلكتروني" + (od.notes?" — "+od.notes:""),
-    zone: "", deliveryPrice: 0, deliveryAccountAssigned: null,
+    date: todayStr(), phone1: od.phone1||"", phone2: od.phone2||"", city: od.city||"", otherCityName, otherZone, notes: "طلب من المتجر الإلكتروني" + (od.notes?" — "+od.notes:""),
+    zone, deliveryPrice: 0, deliveryAccountAssigned: null,
     courierType: null, courierName: "", deliveryStage: "pending", courierResolution: null,
     items,
     totalAmount: Math.round(totalAmount*100)/100,
@@ -4171,8 +4173,9 @@ function renderOnlineStoreAdmin(){
       return `<li>${esc(cat?cat.name:it.catId)}${it.color?" — "+esc(it.color):""}: ${fmtNum(it.qty)} × ${fmtNum(it.price)}</li>`;
     }).join("");
     const total = (od.items||[]).reduce((s,it)=>s+(Number(it.price)||0)*(Number(it.qty)||0),0);
-    const classification = od.cityGroup==="tripoli" ? "طرابلس" : (od.cityGroup==="other" ? `مدن أخرى${od.otherCityName?" — "+esc(od.otherCityName):""}` : "-");
-    return `<tr><td>${fmtDate(o.created_at)}</td><td>${esc(od.name||"-")}</td><td>${esc(od.phone1||"-")}${od.phone2?" / "+esc(od.phone2):""}</td><td>${classification}</td><td>${esc(od.city||"-")}</td>
+    const odCity = od.cityGroup==="tripoli" ? "طرابلس" : (od.otherCityName || "-");
+    const odZone = od.cityGroup==="tripoli" ? (od.zone||"-") : (od.otherZone||"-");
+    return `<tr><td>${fmtDate(o.created_at)}</td><td>${esc(od.phone1||"-")}${od.phone2?" / "+esc(od.phone2):""}</td><td>${esc(odCity)}</td><td>${esc(odZone)}</td><td>${esc(od.city||"-")}</td>
       <td><details><summary>عرض (${(od.items||[]).length})</summary><ul>${itemsHtml}</ul></details></td>
       <td>${fmt(total)}</td>
       <td style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn gold viewer-safe" onclick="importCustomerOrder('${o.id}')">✅ استيراد كفاتورة</button><button class="btn ghost viewer-safe" onclick="dismissCustomerOrder('${o.id}')">تجاهل</button></td></tr>`;
@@ -4233,7 +4236,7 @@ alter publication supabase_realtime add table public_catalog;</pre>
       <div class="section-hint">راجع كل طلب واستورده كفاتورة مبدئية عادية (سيمر بنفس فحص توفر المخزون)، أو تجاهله إذا لم يكن صالحاً</div>
       <button class="btn secondary viewer-safe" onclick="refreshCustomerOrders()">🔄 تحديث الطلبات</button>
       <div class="table-wrap" style="margin-top:14px;max-height:420px;">
-        <table><thead><tr><th>التاريخ</th><th>اسم الزبون</th><th>الهاتف</th><th>التصنيف</th><th>العنوان</th><th>الأصناف</th><th>الإجمالي التقديري</th><th></th></tr></thead>
+        <table><thead><tr><th>التاريخ</th><th>الهاتف</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>الأصناف</th><th>الإجمالي التقديري</th><th></th></tr></thead>
         <tbody>${ordersRows}</tbody></table>
       </div>
     </div>
