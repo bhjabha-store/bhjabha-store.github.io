@@ -63,6 +63,7 @@ body{background:var(--surface);color:var(--text);font-family:Tahoma,"Segoe UI","
 .qty-input{flex:1;min-width:0;}
 .color-select, .qty-input{padding:8px 6px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:12px;background:#FCFAF6;}
 .out-of-stock{color:var(--danger);font-size:11px;font-weight:700;padding:8px;text-align:center;}
+.last-piece-badge{background:var(--danger-soft);color:var(--danger);font-size:10.5px;font-weight:700;padding:5px 8px;border-radius:6px;margin-bottom:8px;text-align:center;}
 .btn{padding:10px 16px;border:none;border-radius:9px;font-weight:700;cursor:pointer;font-size:13.5px;}
 .btn-add{background:var(--teal);color:#fff;width:100%;}
 .btn-add:disabled{background:#ccc;cursor:not-allowed;}
@@ -117,8 +118,17 @@ const SUPABASE_ANON_KEY = "sb_publishable_Ae_4_ZfZDnwtgGWuJ17B3g_a_CP34UZ";
 let supabaseClient = null;
 let catalog = [];
 let cart = []; // {catId, catName, family, sub, color, price, qty, maxQty}
-let ckName = "", ckPhone1 = "", ckPhone2 = "", ckCityGroup = "tripoli", ckOtherCity = "", ckCity = "", ckNotes = "";
+let ckPhone1 = "", ckPhone2 = "", ckCityGroup = "tripoli", ckOtherCity = "", ckZone = "", ckCity = "", ckNotes = "";
 
+const COLOR_ORDER = ["أسود", "أبيض ثلجي", "أبيض", "اوف وايت", "سكري", "سكري داكن", "أزرق كحلي داكن", "أزرق كحلي 1", "أزرق كحلي 2", "ازرق حبري", "أزرق سحابي داكن", "أزرق سحابي", "أزرق ملكي", "أزرق نيلي", "سماوي", "سماوي هافت", "أخضر بترولي", "أخضر بترولي ناصع", "زيتوني داكن", "زيتوني جيشي", "زيتي", "تركوازي داكن", "تركوازي", "تيفاني", "فستقي", "فسفوري", "زرعي", "أحمر دم غزال داكن", "أحمر دم غزال", "عنابي داكن", "عنابي", "حني داكن", "وقيدي", "وردي داكن", "وردي درجة متوسطة", "وردي هافت", "وردي هافت1", "موف داكن", "موف", "موف حلو", "موف هادي", "موف غريب", "بنفسجي", "قهوي داكن  كحلي", "قهوي داكن 1", "قهوي داكن 2", "قهوي", "قهوي حلو1", "قهوي حلو2", "كاكاوي", "كابتشينو", "قرفي", "قرفي هافت", "بيج داكن بزاري", "بيج غامق", "بيج هافت", "بيج رملي", "بيج رملي1", "رصاصي داكن  كحلي", "رصاصي داكن", "رصاصي داكن غونتشي", "رصاصي درجة متوسط1", "رصاصي درجة متوسط2", "رصاصي درجة متوسط3", "رصاصي درجة متوسط4", "رصاصي هافت", "درجات محيرة", "أزرق كحلي", "وردي هافت2", "أزرق حبري", "أزرق سحابي2", "أخضر زيتوني داكن", "أخضر زيتوني", "موف داكن جدا", "رصاصي داكن كحلي"];
+function sortColorsCanonical(names){
+  return names.slice().sort((a,b)=>{
+    let ia = COLOR_ORDER.indexOf(a); if(ia<0) ia = 999;
+    let ib = COLOR_ORDER.indexOf(b); if(ib<0) ib = 999;
+    if(ia!==ib) return ia-ib;
+    return a.localeCompare(b);
+  });
+}
 function esc(s){ return (s||"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmt(n){ return Number(n||0).toLocaleString("en-US",{maximumFractionDigits:2}); }
 
@@ -210,7 +220,11 @@ function renderItemCard(item){
   if(outOfStock){
     body = `<div class="out-of-stock">نفدت الكمية حالياً</div>`;
   } else if(hasColors){
-    const colorOpts = Object.keys(item.colors).map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
+    const colorOpts = sortColorsCanonical(Object.keys(item.colors)).map(c=>{
+      const q = item.colors[c];
+      const lastPieceTag = q===1 ? " — آخر قطعة!" : "";
+      return `<option value="${esc(c)}">${esc(c)}${lastPieceTag}</option>`;
+    }).join("");
     body = `
       <div class="pick-row">
         <select class="color-select" id="color_${item.id}" onchange="onColorPicked('${item.id}', this.value)">
@@ -219,6 +233,7 @@ function renderItemCard(item){
         </select>
         <input type="number" class="qty-input" id="qty_${item.id}" value="1" min="1" placeholder="الكمية">
       </div>
+      <div class="last-piece-badge" id="lastpiece_${item.id}" style="display:none;">⚠ آخر قطعة متوفرة بهذا اللون!</div>
       <button class="btn btn-add" onclick="addToCart('${item.id}')">➕ أضف للسلة</button>`;
   } else {
     body = `
@@ -252,6 +267,11 @@ function onColorPicked(itemId, color){
   } else {
     if(imgEl) imgEl.style.display = "none";
     if(phEl) phEl.style.display = "flex";
+  }
+  const badgeEl = document.getElementById("lastpiece_"+itemId);
+  if(badgeEl){
+    const qty = item.colors ? item.colors[color] : null;
+    badgeEl.style.display = (qty===1) ? "block" : "none";
   }
 }
 function addToCart(catId){
@@ -322,7 +342,6 @@ function openCartModal(){
     <div class="section-title">🛒 سلة الطلب</div>
     <div style="margin:10px 0;">${linesHtml}</div>
     <div style="font-weight:800;font-size:15px;margin:12px 0;text-align:left;">الإجمالي: ${fmt(totalPrice)} د.ل</div>
-    <div class="field"><label>الاسم</label><input type="text" id="ck_name" value="${esc(ckName)}" onchange="ckName=this.value" placeholder="اسمك"></div>
     <div class="field"><label>رقم الهاتف 1</label><input type="text" id="ck_phone1" value="${esc(ckPhone1)}" onchange="ckPhone1=this.value" placeholder="رقم للتواصل"></div>
     <div class="field"><label>رقم الهاتف 2 (اختياري)</label><input type="text" id="ck_phone2" value="${esc(ckPhone2)}" onchange="ckPhone2=this.value"></div>
     <div class="field"><label>التصنيف</label>
@@ -331,7 +350,10 @@ function openCartModal(){
         <option value="other" ${ckCityGroup==='other'?'selected':''}>مدن أخرى</option>
       </select>
     </div>
-    ${ckCityGroup==="other" ? `<div class="field"><label>المدينة</label><input type="text" id="ck_otherCity" value="${esc(ckOtherCity)}" onchange="ckOtherCity=this.value" placeholder="اسم المدينة"></div>` : ""}
+    ${ckCityGroup==="tripoli"
+      ? `<div class="field"><label>المدينة</label><input type="text" value="طرابلس" disabled style="background:#F0EBDD;color:var(--muted);"></div>`
+      : `<div class="field"><label>المدينة</label><input type="text" id="ck_otherCity" value="${esc(ckOtherCity)}" onchange="ckOtherCity=this.value" placeholder="اسم المدينة"></div>`}
+    <div class="field"><label>المنطقة</label><input type="text" id="ck_zone" value="${esc(ckZone)}" onchange="ckZone=this.value" placeholder="اسم المنطقة/الحي"></div>
     <div class="field"><label>العنوان</label><input type="text" id="ck_city" value="${esc(ckCity)}" onchange="ckCity=this.value" placeholder="عنوانك بالتفصيل"></div>
     <div class="field"><label>ملاحظات (اختياري)</label><textarea id="ck_notes" rows="2" onchange="ckNotes=this.value">${esc(ckNotes)}</textarea></div>
     <button class="btn" style="background:var(--wine);color:#fff;width:100%;font-size:14px;padding:12px;" onclick="submitOrder()">✅ تأكيد الطلب</button>
@@ -354,18 +376,21 @@ function removeCartLine(idx){
 }
 async function submitOrder(){
   if(!cart.length){ alert("السلة فارغة"); return; }
-  const name = document.getElementById("ck_name").value.trim();
   const phone1 = document.getElementById("ck_phone1").value.trim();
   const cityGroup = document.getElementById("ck_cityGroup").value;
   const otherCityEl = document.getElementById("ck_otherCity");
   const otherCityName = cityGroup==="other" && otherCityEl ? otherCityEl.value.trim() : "";
+  const zone = document.getElementById("ck_zone").value.trim();
   const city = document.getElementById("ck_city").value.trim();
   const phone2 = document.getElementById("ck_phone2").value.trim();
   const notes = document.getElementById("ck_notes").value.trim();
-  if(!name || !phone1 || !city){ alert("يرجى تعبئة الاسم ورقم الهاتف والعنوان على الأقل"); return; }
+  if(!phone1 || !city){ alert("يرجى تعبئة رقم الهاتف والعنوان على الأقل"); return; }
 
   const orderData = {
-    name, phone1, phone2, cityGroup, otherCityName, city, notes,
+    phone1, phone2, cityGroup, otherCityName,
+    zone: cityGroup==="tripoli" ? zone : "",
+    otherZone: cityGroup==="other" ? zone : "",
+    city, notes,
     items: cart.map(c=>({catId:c.catId, color:c.color, price:c.price, qty:c.qty}))
   };
   try{
@@ -380,7 +405,7 @@ async function submitOrder(){
       });
     }
     cart = [];
-    ckName = ""; ckPhone1 = ""; ckPhone2 = ""; ckCityGroup = "tripoli"; ckOtherCity = ""; ckCity = ""; ckNotes = "";
+    ckPhone1 = ""; ckPhone2 = ""; ckCityGroup = "tripoli"; ckOtherCity = ""; ckZone = ""; ckCity = ""; ckNotes = "";
     updateCartBar();
     closeCartModal();
     try{ localStorage.setItem("bh_last_order_phone", phone1); }catch(e){}
