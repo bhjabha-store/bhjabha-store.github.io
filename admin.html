@@ -395,7 +395,8 @@ function defaultState(){
     _v18ColorImages: true,
     _v19CourierDelivery: true,
     _v20RepsCompanies: true,
-    _v21OtherZone: true
+    _v21OtherZone: true,
+    _v22CancelReturn: true
   };
 }
 function generateBarcode(){
@@ -477,7 +478,8 @@ function clearSupabaseConfig(){
   try{ localStorage.removeItem("bh_supabase_url"); localStorage.removeItem("bh_supabase_key"); }catch(e){}
   if(realtimeChannel && supabaseClient){ try{ supabaseClient.removeChannel(realtimeChannel); }catch(e){} }
   if(onlineStoreChannel && supabaseClient){ try{ supabaseClient.removeChannel(onlineStoreChannel); }catch(e){} }
-  supabaseClient = null; realtimeChannel = null; lastKnownUpdatedAt = null; onlineStoreChannel = null;
+  if(courierReturnsChannel && supabaseClient){ try{ supabaseClient.removeChannel(courierReturnsChannel); }catch(e){} }
+  supabaseClient = null; realtimeChannel = null; lastKnownUpdatedAt = null; onlineStoreChannel = null; courierReturnsChannel = null;
 }
 function initSupabase(){
   const cfg = getSupabaseConfig();
@@ -851,6 +853,14 @@ async function loadState(){
     });
     state._v21OtherZone = true;
   }
+  if(!state._v22CancelReturn){
+    state.pendingInvoices.forEach(inv=>{
+      if(inv.courierReturnedFlag===undefined) inv.courierReturnedFlag = false;
+      if(inv.courierReturnFeeNote===undefined) inv.courierReturnFeeNote = "";
+      if(inv.cancelledDate===undefined) inv.cancelledDate = null;
+    });
+    state._v22CancelReturn = true;
+  }
   if(!state.nextBarcodeSeq) state.nextBarcodeSeq = 1;
   if(!state.barcodeIndex) state.barcodeIndex = {};
   state.categories.forEach(cat=>{
@@ -861,7 +871,7 @@ async function loadState(){
   if(!state.settings.viewerPassword){ state.settings.viewerPassword = ""; }
   if(state.settings.lastBackupDate===undefined){ state.settings.lastBackupDate = null; }
   saveState();
-  if(supabaseClient) { setupRealtimeSync(); setupOnlineOrdersRealtime(); autoBackupIfDue(); }
+  if(supabaseClient) { setupRealtimeSync(); setupOnlineOrdersRealtime(); setupCourierReturnsRealtime(); autoBackupIfDue(); }
   tryRestoreSession();
 }
 function tryRestoreSession(){
@@ -2453,6 +2463,8 @@ function renderPurchasesPage(){
 }
 
 /* ==================== SALES PAGE (multi-item invoice) ==================== */
+let salesFilterMode = "all";
+function setSalesFilterMode(mode){ salesFilterMode = mode; render(); }
 function allSalesRecordsForDisplay(){
   const records = [];
   state.salesInvoices.forEach(inv=> records.push({
@@ -2463,6 +2475,17 @@ function allSalesRecordsForDisplay(){
   }));
   state.pendingInvoices.forEach(inv=>{
     if(inv.status==="pending" || inv.status==="shortage") return;
+    if(inv.status==="cancelled"){
+      records.push({
+        id: inv.id, number: inv.number, cityGroup: inv.cityGroup, date: inv.cancelledDate||inv.date, phone1: inv.phone1, phone2: inv.phone2, city: inv.city,
+        zone: inv.zone, otherCityName: inv.otherCityName, otherZone: inv.otherZone,
+        totalAmount: inv.totalAmount,
+        payments: [], cardFeeApplied: false, cardFeeAmount: 0,
+        items: inv.items.map(it=>({catName:it.catName, color:it.color, price:it.price, qty:it.qty, total:it.total})),
+        source: "فاتورة مبدئية", statusLabel: "طلبية ملغية", isCancelled: true
+      });
+      return;
+    }
     const soldItems = inv.items.filter(it=>(it.soldQty||0)>0);
     records.push({
       id: inv.id, number: inv.number, cityGroup: inv.cityGroup, date: inv.resolvedDate||inv.date, phone1: inv.phone1, phone2: inv.phone2, city: inv.city,
@@ -2470,7 +2493,7 @@ function allSalesRecordsForDisplay(){
       totalAmount: soldItems.reduce((s,it)=>s+Math.round(it.price*it.soldQty*100)/100,0),
       payments: inv.payments||[], cardFeeApplied: inv.cardFeeApplied, cardFeeAmount: inv.cardFeeAmount,
       items: soldItems.map(it=>({catName:it.catName, color:it.color, price:it.price, qty:it.soldQty, total:Math.round(it.price*it.soldQty*100)/100})),
-      source: "فاتورة مبدئية", statusLabel: inv.status==="returned" ? "مرتجعة بالكامل" : (inv.returnedNote && inv.returnedNote.startsWith("مرتجع جزئي") ? "مرتجع جزئي" : null)
+      source: "فاتورة مبدئية", statusLabel: inv.status==="returned" ? "مرتجعة بالكامل" : (inv.returnedNote && inv.returnedNote.startsWith("مرتجع جزئي") ? "مرتجع جزئي" : null), isCancelled: false
     });
   });
   records.sort((a,b)=> (b.date||"").localeCompare(a.date||"") || b.number-a.number);
@@ -2480,7 +2503,8 @@ function renderSalesPage(){
   const rs = renderResolveScreen();
   if(rs) return rs;
 
-  const records = allSalesRecordsForDisplay();
+  let records = allSalesRecordsForDisplay();
+  if(salesFilterMode==="cancelled"){ records = records.filter(r=>r.isCancelled); }
   const tripoliRecords = records.filter(r=>r.cityGroup==="tripoli");
   const otherRecords = records.filter(r=>r.cityGroup==="other");
 
@@ -2488,16 +2512,26 @@ function renderSalesPage(){
     const rows = list.map(r=>{
       const qty = r.items.reduce((s,it)=>s+(Number(it.qty)||0),0);
       const loc = invoiceLocationLabels(r);
-      const editButtons = r.source==="فاتورة مبدئية"
+      const editButtons = r.source==="فاتورة مبدئية" && !r.isCancelled
         ? `<button class="btn ghost" onclick="startResolvePending('${r.id}')">✏️ تعديل التسوية</button><button class="btn ghost" onclick="editPendingInvoice('${r.id}')">✎ تعديل كامل</button>`
         : "";
+      const cancelButton = r.source==="فاتورة مبدئية" && !r.isCancelled
+        ? `<button class="btn ghost" onclick="cancelOrder('${r.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`
+        : "";
+      const rowStyle = r.isCancelled ? 'style="background:var(--danger-soft);"' : "";
+      const numberCell = r.isCancelled
+        ? `<span class="invoice-badge" style="background:var(--danger);color:#fff;">${cityGroupLabel(r.cityGroup)} #${r.number}</span>`
+        : `<span class="invoice-badge">${cityGroupLabel(r.cityGroup)} #${r.number}</span>`;
+      const statusCell = r.isCancelled
+        ? `<span style="color:var(--danger);font-weight:800;">طلبية ملغية</span>`
+        : (r.statusLabel ? `<span class="tag" style="background:var(--danger-soft);color:var(--danger);">${r.statusLabel}</span>` : `<span class="tag teal">مكتملة</span>`);
       return `
-      <tr><td><span class="invoice-badge">${cityGroupLabel(r.cityGroup)} #${r.number}</span></td><td>${fmtDate(r.date)}</td><td>${esc(r.phone1||"-")}${r.phone2?" / "+esc(r.phone2):""}</td>
+      <tr ${rowStyle}><td>${numberCell}</td><td>${fmtDate(r.date)}</td><td>${esc(r.phone1||"-")}${r.phone2?" / "+esc(r.phone2):""}</td>
         <td>${esc(loc.city)}</td><td>${esc(loc.zone)}</td><td>${esc(loc.address)}</td>
         <td>${fmtNum(qty)}</td><td>${fmt(r.totalAmount)}</td><td>${esc(paymentsSummary(r.payments))}${r.cardFeeApplied?` <span class="tag">عمولة ${fmtNum(r.cardFeeAmount)}</span>`:""}</td>
-        <td>${r.statusLabel ? `<span class="tag" style="background:var(--danger-soft);color:var(--danger);">${r.statusLabel}</span>` : `<span class="tag teal">مكتملة</span>`}</td>
+        <td>${statusCell}</td>
         <td><details><summary>عرض (${r.items.length})</summary><ul>${r.items.map(it=>`<li>${esc(it.catName)}${it.color?" — "+esc(it.color):""}: ${fmtNum(it.qty)} × ${fmtNum(it.price)} = ${fmtNum(it.total)}</li>`).join("")}</ul></details></td>
-        <td style="display:flex;gap:6px;flex-wrap:wrap;">${editButtons}<button class="btn ghost viewer-safe" onclick="printSalesRecord(${r.number}, '${r.cityGroup}')">🖨 طباعة</button></td></tr>`;
+        <td style="display:flex;gap:6px;flex-wrap:wrap;">${editButtons}${cancelButton}<button class="btn ghost viewer-safe" onclick="printSalesRecord(${r.number}, '${r.cityGroup}')">🖨 طباعة</button></td></tr>`;
     }).join("") || `<tr><td colspan="11" class="empty-row">لا توجد فواتير في هذا التصنيف بعد</td></tr>`;
     return `<div class="table-wrap" style="max-height:500px;">
       <table><thead><tr><th>الفاتورة</th><th>التاريخ</th><th>الهاتف</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>عدد القطع</th><th>الإجمالي</th><th>طريقة الدفع</th><th>الحالة</th><th>الأصناف</th><th></th></tr></thead>
@@ -2509,6 +2543,10 @@ function renderSalesPage(){
     <div class="section">
       <div class="section-title">💳 فواتير المبيعات (سجل الفواتير المسوّاة)</div>
       <div class="section-hint">هذا السجل هو فواتير البيع الفعلية — كل فاتورة تُصدر من صفحة "فواتير مبدئية" بعد تسويتها، وتحمل نفس رقم الفاتورة المبدئية دائماً حتى لو تغيّر المرتجع لاحقاً. لتعديل فاتورة بعد التسوية اضغط "تعديل التسوية" أو "تعديل كامل". كل تصنيف معروض بجدوله المستقل.</div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button class="btn ${salesFilterMode==='all'?'gold':'ghost'}" onclick="setSalesFilterMode('all')">الكل</button>
+        <button class="btn ${salesFilterMode==='cancelled'?'gold':'ghost'}" onclick="setSalesFilterMode('cancelled')">❌ الطلبيات الملغية فقط</button>
+      </div>
     </div>
     <div class="section">
       <div class="section-title">🏙 فواتير طرابلس (${tripoliRecords.length})</div>
@@ -2590,7 +2628,7 @@ function savePendingInvoice(){
     const invoice = {
       id:"pdinv_"+Math.random().toString(36).slice(2), number, cityGroup,
       date, phone1, phone2, city, notes, zone, deliveryPrice, otherCityName, otherZone, deliveryAccountAssigned: null,
-      courierType: null, courierName: "", deliveryStage: "pending", courierResolution: null,
+      courierType: null, courierName: "", deliveryStage: "pending", courierResolution: null, courierReturnedFlag: false, courierReturnFeeNote: "", cancelledDate: null,
       items,
       totalAmount: pdDraftTotal(),
       status: check.ok ? "pending" : "shortage", payments: [], cardFeeApplied:false, cardFeeAmount:0, resolvedDate:null, returnedNote:""
@@ -2711,6 +2749,20 @@ async function undoAssignCourier(id){
   if(!inv) return;
   inv.courierType = null; inv.courierName = ""; inv.deliveryStage = "pending"; inv.courierResolution = null;
   logActivity(`إلغاء تحويل الفاتورة #${inv.number} للتوصيل`);
+  await saveState();
+  render();
+  await autoPublishCourierInvoices();
+}
+async function cancelOrder(id){
+  if(currentRole==="viewer"){ alert("وضع المشاهدة فقط لا يسمح بإلغاء الطلبيات."); return; }
+  const inv = state.pendingInvoices.find(i=>i.id===id);
+  if(!inv) return;
+  if(inv.status==="resolved"){ alert("لا يمكن إلغاء فاتورة مُسوّاة نهائياً (مُباعة فعلياً) — استخدم زر \"تعديل التسوية\" لإرجاعها بدل ذلك."); return; }
+  if(!(await showCustomConfirm(`سيتم إلغاء الفاتورة #${inv.number} نهائياً — ستظهر في قائمة "المبيعات" كطلبية ملغية. لم يُخصم أي شيء من المخزون أو الحسابات بعد، فلا حاجة لأي تعديل مالي. هل أنت متأكد؟`))) return;
+  inv.status = "cancelled";
+  inv.deliveryStage = "pending";
+  inv.cancelledDate = todayStr();
+  logActivity(`إلغاء الفاتورة #${inv.number} نهائياً`);
   await saveState();
   render();
   await autoPublishCourierInvoices();
@@ -3189,17 +3241,24 @@ function renderInDeliveryPage(){
 
   const inDeliveryList = state.pendingInvoices.filter(i=>(i.status==="pending"||i.status==="shortage") && i.deliveryStage==="in_delivery").slice().sort((a,b)=>b.number-a.number);
 
-  const buildRows = (list) => list.map(inv=>{
+  const buildRows = (list, showCourierName) => list.map(inv=>{
     const qty = inv.items.reduce((s,it)=>s+(Number(it.qty)||0),0);
     const loc = invoiceLocationLabels(inv);
+    const returned = inv.courierReturnedFlag;
+    const nameCell = showCourierName ? `<td>${esc(inv.courierName||"-")}</td>` : "";
+    const returnBadge = returned ? `<div style="color:var(--danger);font-weight:800;font-size:11.5px;margin-bottom:4px;">⚠ تم إرجاع الطلبية من المندوب${inv.courierReturnFeeNote?" — "+esc(inv.courierReturnFeeNote):""}</div>` : "";
+    const actionButtons = returned
+      ? `<button class="btn gold viewer-safe" onclick="cancelOrder('${inv.id}')">✅ إلغاء الطلبية نهائياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button>`
+      : `<button class="btn gold viewer-safe" onclick="startCourierManualSettle('${inv.id}')">📝 تسجيل التسليم يدوياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="undoAssignCourier('${inv.id}')">↩ إلغاء التحويل</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`;
     return `
-    <tr><td><span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span></td><td>${fmtDate(inv.date)}</td><td>${esc(inv.phone1||"-")}${inv.phone2?" / "+esc(inv.phone2):""}</td>
-      <td>${esc(loc.city)}</td><td>${esc(loc.zone)}</td><td>${esc(loc.address)}</td>
+    <tr ${returned?'style="background:var(--danger-soft);"':''}><td><span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span></td><td>${fmtDate(inv.date)}</td><td>${esc(inv.phone1||"-")}${inv.phone2?" / "+esc(inv.phone2):""}</td>
+      ${nameCell}<td>${esc(loc.city)}</td><td>${esc(loc.zone)}</td><td>${esc(loc.address)}</td>
       <td>${fmtNum(qty)}</td><td>${fmt(inv.totalAmount)}</td>
-      <td style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn gold viewer-safe" onclick="startCourierManualSettle('${inv.id}')">📝 تسجيل التسليم يدوياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="undoAssignCourier('${inv.id}')">↩ إلغاء التحويل</button></td></tr>`;
-  }).join("") || `<tr><td colspan="9" class="empty-row">لا توجد طلبيات في هذا التصنيف</td></tr>`;
+      <td style="display:flex;flex-direction:column;align-items:flex-start;gap:6px;">${returnBadge}<div style="display:flex;gap:6px;flex-wrap:wrap;">${actionButtons}</div></td></tr>`;
+  }).join("") || `<tr><td colspan="10" class="empty-row">لا توجد طلبيات في هذا التصنيف</td></tr>`;
 
   const tableHead = `<tr><th>الفاتورة</th><th>التاريخ</th><th>الهاتف</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>عدد القطع</th><th>الإجمالي</th><th></th></tr>`;
+  const tableHeadWithName = `<tr><th>الفاتورة</th><th>التاريخ</th><th>الهاتف</th><th>اسم المندوب/الشركة</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>عدد القطع</th><th>الإجمالي</th><th></th></tr>`;
   const ownerList = inDeliveryList.filter(i=>i.courierType==="owner");
   const repList = inDeliveryList.filter(i=>i.courierType==="rep");
   const companyList = inDeliveryList.filter(i=>i.courierType==="company");
@@ -3225,7 +3284,18 @@ create table courier_settlements (
   created_at timestamptz not null default now()
 );
 alter table courier_settlements enable row level security;
-create policy "public read/write courier settlements" on courier_settlements for all using (true) with check (true);</pre>
+create policy "public read/write courier settlements" on courier_settlements for all using (true) with check (true);
+
+create table courier_returns (
+  id text primary key,
+  invoice_id text not null,
+  returned boolean not null,
+  delivery_fee_note text,
+  created_at timestamptz not null default now()
+);
+alter table courier_returns enable row level security;
+create policy "public read/write courier returns" on courier_returns for all using (true) with check (true);
+alter publication supabase_realtime add table courier_returns;</pre>
         <div class="section-hint">بعد تنفيذ هذا الكود مرة واحدة في SQL Editor بمشروع Supabase، افتح ملف "بوابة المندوبين متجر بحجابها" المرفق، والصق فيه نفس رابط ومفتاح Supabase المستخدمين في هذا النظام، وشاركه مع أي مندوب.</div>
       </details>
       <div class="section-hint">محوَّلة لصاحب المتجر أو مندوب/شركة توصيل، بانتظار تسليمها للزبون (عبر رابط المندوب أو تسجيل يدوي)</div>
@@ -3233,15 +3303,15 @@ create policy "public read/write courier settlements" on courier_settlements for
     </div>
     <div class="section">
       <div class="section-title">🏪 صاحب المتجر بهاء (${ownerList.length})</div>
-      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHead}</thead><tbody>${buildRows(ownerList)}</tbody></table></div>
+      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHead}</thead><tbody>${buildRows(ownerList, false)}</tbody></table></div>
     </div>
     <div class="section">
       <div class="section-title">🚴 مندوبون (${repList.length})</div>
-      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHead}</thead><tbody>${buildRows(repList)}</tbody></table></div>
+      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHeadWithName}</thead><tbody>${buildRows(repList, true)}</tbody></table></div>
     </div>
     <div class="section">
       <div class="section-title">🚛 شركات توصيل (${companyList.length})</div>
-      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHead}</thead><tbody>${buildRows(companyList)}</tbody></table></div>
+      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHeadWithName}</thead><tbody>${buildRows(companyList, true)}</tbody></table></div>
     </div>
   `;
 }
@@ -3252,18 +3322,25 @@ function renderDeliveredPage(){
 
   const deliveredList = state.pendingInvoices.filter(i=>(i.status==="pending"||i.status==="shortage") && i.deliveryStage==="delivered").slice().sort((a,b)=>b.number-a.number);
 
-  const buildRows = (list) => list.map(inv=>{
+  const buildRows = (list, showCourierName) => list.map(inv=>{
     const cr = inv.courierResolution;
     const loc = invoiceLocationLabels(inv);
     const soldQty = cr ? cr.items.reduce((s,it)=>s+(Number(it.soldQty)||0),0) : 0;
+    const returned = inv.courierReturnedFlag;
+    const nameCell = showCourierName ? `<td>${esc(inv.courierName||"-")}</td>` : "";
+    const returnBadge = returned ? `<div style="color:var(--danger);font-weight:800;font-size:11.5px;margin-bottom:4px;">⚠ تم إرجاع الطلبية من المندوب${inv.courierReturnFeeNote?" — "+esc(inv.courierReturnFeeNote):""}</div>` : "";
+    const actionButtons = returned
+      ? `<button class="btn gold viewer-safe" onclick="cancelOrder('${inv.id}')">✅ إلغاء الطلبية نهائياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button>`
+      : `<button class="btn gold viewer-safe" onclick="startResolvePending('${inv.id}')">✅ تسوية نهائية</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="deleteFromDelivered('${inv.id}')">🗑 حذف</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`;
     return `
-    <tr><td><span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span></td><td>${fmtDate(inv.date)}</td>
-      <td>${esc(loc.city)}</td><td>${esc(loc.zone)}</td><td>${esc(loc.address)}</td>
+    <tr ${returned?'style="background:var(--danger-soft);"':''}><td><span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span></td><td>${fmtDate(inv.date)}</td>
+      ${nameCell}<td>${esc(loc.city)}</td><td>${esc(loc.zone)}</td><td>${esc(loc.address)}</td>
       <td>${fmtNum(soldQty)}</td><td>${fmt(cr ? cr.items.reduce((s,it)=>s+(it.price*it.soldQty),0) : 0)}</td><td>${cr ? esc(paymentsSummary(cr.payments)) : "-"}</td><td>${cr ? fmt(cr.deliveryPriceFinal||0) : "-"}</td>
-      <td style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn gold viewer-safe" onclick="startResolvePending('${inv.id}')">✅ تسوية نهائية</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="deleteFromDelivered('${inv.id}')">🗑 حذف</button></td></tr>`;
-  }).join("") || `<tr><td colspan="10" class="empty-row">لا توجد طلبيات في هذا التصنيف</td></tr>`;
+      <td style="display:flex;flex-direction:column;align-items:flex-start;gap:6px;">${returnBadge}<div style="display:flex;gap:6px;flex-wrap:wrap;">${actionButtons}</div></td></tr>`;
+  }).join("") || `<tr><td colspan="11" class="empty-row">لا توجد طلبيات في هذا التصنيف</td></tr>`;
 
   const tableHead = `<tr><th>الفاتورة</th><th>التاريخ</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>عدد القطع المُباعة</th><th>المبلغ</th><th>طريقة الدفع</th><th>قيمة التوصيل</th><th></th></tr>`;
+  const tableHeadWithName = `<tr><th>الفاتورة</th><th>التاريخ</th><th>اسم المندوب/الشركة</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>عدد القطع المُباعة</th><th>المبلغ</th><th>طريقة الدفع</th><th>قيمة التوصيل</th><th></th></tr>`;
   const ownerList = deliveredList.filter(i=>i.courierType==="owner");
   const repList = deliveredList.filter(i=>i.courierType==="rep");
   const companyList = deliveredList.filter(i=>i.courierType==="company");
@@ -3274,15 +3351,15 @@ function renderDeliveredPage(){
     </div>
     <div class="section">
       <div class="section-title">🏪 صاحب المتجر بهاء (${ownerList.length})</div>
-      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHead}</thead><tbody>${buildRows(ownerList)}</tbody></table></div>
+      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHead}</thead><tbody>${buildRows(ownerList, false)}</tbody></table></div>
     </div>
     <div class="section">
       <div class="section-title">🚴 مندوبون (${repList.length})</div>
-      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHead}</thead><tbody>${buildRows(repList)}</tbody></table></div>
+      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHeadWithName}</thead><tbody>${buildRows(repList, true)}</tbody></table></div>
     </div>
     <div class="section">
       <div class="section-title">🚛 شركات توصيل (${companyList.length})</div>
-      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHead}</thead><tbody>${buildRows(companyList)}</tbody></table></div>
+      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHeadWithName}</thead><tbody>${buildRows(companyList, true)}</tbody></table></div>
     </div>
   `;
 }
@@ -3572,6 +3649,7 @@ async function connectSupabase(){
     }
     setupRealtimeSync();
     setupOnlineOrdersRealtime();
+    setupCourierReturnsRealtime();
     autoBackupIfDue();
     saveState();
     render();
@@ -3921,6 +3999,7 @@ function buildCourierInvoicesData(){
     courierType: inv.courierType, courierName: inv.courierName,
     deliveryStage: inv.deliveryStage,
     courierResolution: inv.courierResolution,
+    courierReturnedFlag: inv.courierReturnedFlag, courierReturnFeeNote: inv.courierReturnFeeNote,
     totalAmount: inv.totalAmount,
     items: inv.items.map(it=>({catId:it.catId, catName:it.catName, color:it.color, price:it.price, qty:it.qty}))
   }));
@@ -4071,6 +4150,27 @@ function setupOnlineOrdersRealtime(){
       .subscribe();
   }catch(e){ console.error("Orders realtime subscribe failed", e); }
 }
+let courierReturnsChannel = null;
+function setupCourierReturnsRealtime(){
+  if(!supabaseClient || courierReturnsChannel) return;
+  try{
+    courierReturnsChannel = supabaseClient.channel("courier_returns_sync")
+      .on("postgres_changes", { event:"INSERT", schema:"public", table:"courier_returns" }, (payload)=>{
+        const row = payload.new;
+        if(!row) return;
+        const inv = state.pendingInvoices.find(i=>i.id===row.invoice_id);
+        if(inv){
+          inv.courierReturnedFlag = !!row.returned;
+          inv.courierReturnFeeNote = row.delivery_fee_note || "";
+          logActivity(`${row.returned?"إشعار إرجاع":"إلغاء إشعار إرجاع"} من المندوب للفاتورة #${inv.number}`);
+          saveState();
+          render();
+          autoPublishCourierInvoices();
+        }
+      })
+      .subscribe();
+  }catch(e){ console.error("Courier returns realtime subscribe failed", e); }
+}
 async function importCustomerOrder(orderId){
   const order = customerOrdersCache.find(o=>o.id===orderId);
   if(!order) return;
@@ -4093,7 +4193,7 @@ async function importCustomerOrder(orderId){
     id:"pdinv_"+Math.random().toString(36).slice(2), number, cityGroup,
     date: todayStr(), phone1: od.phone1||"", phone2: od.phone2||"", city: od.city||"", otherCityName, otherZone, notes: "طلب من المتجر الإلكتروني" + (od.notes?" — "+od.notes:""),
     zone, deliveryPrice: 0, deliveryAccountAssigned: null,
-    courierType: null, courierName: "", deliveryStage: "pending", courierResolution: null,
+    courierType: null, courierName: "", deliveryStage: "pending", courierResolution: null, courierReturnedFlag: false, courierReturnFeeNote: "", cancelledDate: null,
     items,
     totalAmount: Math.round(totalAmount*100)/100,
     status: check.ok ? "pending" : "shortage", payments: [], cardFeeApplied:false, cardFeeAmount:0, resolvedDate:null, returnedNote:""
