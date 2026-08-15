@@ -71,11 +71,12 @@ body{background:var(--surface);color:var(--text);font-family:Tahoma,"Segoe UI","
 .cart-bar .count{font-size:13px;color:var(--muted);}
 .cart-bar .total{font-size:16px;font-weight:800;color:var(--wine);}
 .cart-bar button{background:var(--wine);color:#fff;padding:11px 26px;}
-html, body{height:100%;overscroll-behavior:none;}
-body.modal-open{overflow:hidden;position:fixed;width:100%;height:100%;}
-.cart-modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;height:calc(var(--vh, 1vh) * 100);background:rgba(0,0,0,.6);z-index:9998;align-items:flex-end;justify-content:center;}
-.cart-modal-overlay.open{display:flex;}
-.cart-modal-box{background:#fff;border-radius:16px 16px 0 0;padding:20px;max-width:640px;width:100%;box-sizing:border-box;max-height:85vh;max-height:calc(var(--vh, 1vh) * 85);overflow-y:auto;-webkit-overflow-scrolling:touch;}
+html, body{height:100%;}
+.page-view{display:none;min-height:100vh;background:var(--surface);}
+.page-view.open{display:block;}
+.page-view-topbar{position:sticky;top:0;z-index:100;background:linear-gradient(135deg,var(--wine),var(--wine-dark));color:#fff;padding:calc(14px + env(safe-area-inset-top)) 16px 14px;display:flex;align-items:center;gap:14px;}
+.back-btn{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.4);padding:8px 16px;border-radius:20px;font-size:13px;cursor:pointer;flex-shrink:0;}
+.page-view-title{font-weight:800;font-size:15px;}
 .cart-line{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;}
 .cart-line button{background:none;border:none;color:var(--danger);font-size:16px;cursor:pointer;}
 .field{margin-bottom:10px;}
@@ -102,12 +103,20 @@ body.modal-open{overflow:hidden;position:fixed;width:100%;height:100%;}
   <button onclick="openCartModal()">🛒 عرض السلة والطلب</button>
 </div>
 
-<div class="cart-modal-overlay" id="cartModal">
-  <div class="cart-modal-box" id="cartModalBox"></div>
+<div class="page-view" id="cartModal">
+  <div class="page-view-topbar">
+    <button class="back-btn" onclick="closeCartModal()">→ رجوع للمتجر</button>
+    <span class="page-view-title">🛒 سلة الطلب</span>
+  </div>
+  <div class="container" id="cartModalBox"></div>
 </div>
 
-<div class="cart-modal-overlay" id="trackModal">
-  <div class="cart-modal-box" id="trackModalBox"></div>
+<div class="page-view" id="trackModal">
+  <div class="page-view-topbar">
+    <button class="back-btn" onclick="closeTrackModal()">→ رجوع للمتجر</button>
+    <span class="page-view-title">📦 تتبع طلبي</span>
+  </div>
+  <div class="container" id="trackModalBox"></div>
 </div>
 
 <script>
@@ -132,24 +141,17 @@ function sortColorsCanonical(names){
 function esc(s){ return (s||"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmt(n){ return Number(n||0).toLocaleString("en-US",{maximumFractionDigits:2}); }
 
-function setRealVH(){
-  const h = (window.visualViewport ? window.visualViewport.height : window.innerHeight);
-  document.documentElement.style.setProperty("--vh", (h*0.01)+"px");
-}
-setRealVH();
-window.addEventListener("resize", setRealVH);
-window.addEventListener("orientationchange", setRealVH);
-if(window.visualViewport){ window.visualViewport.addEventListener("resize", setRealVH); window.visualViewport.addEventListener("scroll", setRealVH); }
 function showModal(id){
+  document.getElementById("mainContainer").style.display = "none";
+  document.getElementById("cartBar").style.display = "none";
   document.getElementById(id).classList.add("open");
-  document.body.classList.add("modal-open");
-  setRealVH();
+  window.scrollTo(0,0);
 }
 function hideModal(id){
   document.getElementById(id).classList.remove("open");
-  const cartOpen = document.getElementById("cartModal").classList.contains("open");
-  const trackOpen = document.getElementById("trackModal").classList.contains("open");
-  if(!cartOpen && !trackOpen){ document.body.classList.remove("modal-open"); }
+  document.getElementById("mainContainer").style.display = "";
+  updateCartBar();
+  window.scrollTo(0,0);
 }
 
 async function init(){
@@ -462,13 +464,6 @@ async function lookupOrders(){
     resultsEl.innerHTML = `<div class="section-hint">تعذّر البحث: ${esc(e && e.message ? e.message : String(e))}</div>`;
   }
 }
-
-document.getElementById("cartModal").addEventListener("click", (e)=>{
-  if(e.target.id==="cartModal") closeCartModal();
-});
-document.getElementById("trackModal").addEventListener("click", (e)=>{
-  if(e.target.id==="trackModal") closeTrackModal();
-});
 
 init();
 </script>
