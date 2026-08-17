@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
@@ -69,7 +70,6 @@ let loggedInType = ""; // "rep" | "company"
 let loggedInName = "";
 let activeTab = "in_delivery"; // "in_delivery" | "delivered"
 let settlingId = null;
-let returningId = null;
 let settleItems = [];
 let settlePayments = [];
 
@@ -145,33 +145,29 @@ function render(){
     const totalQty = inv.items.reduce((s,it)=>s+(Number(it.qty)||0),0);
     const itemsRows = inv.items.map(it=>`<tr><td>${esc(it.catName)}</td><td>${esc(it.color||"-")}</td><td>${fmt(it.price)}</td><td>${fmt(it.qty)}</td></tr>`).join("");
     const settleBoxHtml = settlingId===inv.id ? renderSettleBox(inv) : "";
-    const deliveredSummaryHtml = (activeTab==="delivered" && settlingId!==inv.id && !inv.courierReturnedFlag) ? renderDeliveredSummary(inv) : "";
-    const returned = inv.courierReturnedFlag;
-    const returnBoxHtml = returningId===inv.id ? renderReturnBox(inv) : "";
+    const deliveredSummaryHtml = (activeTab==="delivered" && settlingId!==inv.id) ? renderDeliveredSummary(inv) : "";
     return `
-      <div class="invoice-card" ${returned?'style="border:2px solid var(--danger);background:var(--danger-soft);"':''}>
+      <div class="invoice-card">
         <div class="invoice-head">
           <span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span>
-          ${returned ? `<span class="tag" style="background:var(--danger);color:#fff;">↩ تم إرجاع الطلبية</span>` : (activeTab==="delivered" ? `<span class="tag done">✅ تم التسليم</span>` : "")}
+          ${activeTab==="delivered" ? `<span class="tag done">✅ تم التسليم</span>` : ""}
         </div>
-        ${returned && inv.courierReturnFeeNote ? `<div style="font-size:11.5px;color:var(--danger);font-weight:700;margin-bottom:6px;">${esc(inv.courierReturnFeeNote)}</div>` : ""}
         <div class="invoice-meta">
           📅 ${esc(inv.date)}<br>
           📞 ${esc(inv.phone1||"-")}${inv.phone2?" / "+esc(inv.phone2):""} <button class="btn ghost" style="padding:2px 8px;font-size:10.5px;" onclick="copyPhone('${esc(inv.phone1||"").replace(/'/g,"\\'")}')">📋 نسخ</button><br>
           📍 ${inv.cityGroup==="other" && inv.otherCityName ? esc(inv.otherCityName)+" — ":""}${esc(inv.city||"-")}
           ${inv.zone ? `<br>🗺 ${esc(inv.zone)}` : ""}
           ${inv.notes ? `<br>📝 ${esc(inv.notes)}` : ""}
+          <br>🚚 قيمة التوصيل: <b>${fmt(inv.deliveryPrice||0)}</b>
         </div>
         <table><thead><tr><th>الصنف</th><th>اللون</th><th>السعر</th><th>العدد</th></tr></thead><tbody>${itemsRows}</tbody></table>
         <div class="total-line"><span>إجمالي عدد القطع: ${fmt(totalQty)}</span><span>${fmt(inv.totalAmount)}</span></div>
         <div class="actions-row">
-          ${!returned && activeTab==="in_delivery" ? `<button class="btn gold" onclick="openSettle('${inv.id}')">${settlingId===inv.id?'✖ إغلاق':'✅ تسوية'}</button>` : ""}
-          ${!returned && activeTab==="delivered" ? `<button class="btn gold" onclick="openSettle('${inv.id}')">${settlingId===inv.id?'✖ إغلاق':'✏️ تعديل التسوية'}</button>` : ""}
-          ${!returned ? `<button class="btn" style="background:var(--danger);color:#fff;" onclick="onReturnClick('${inv.id}')">↩ إرجاع الطلبية من الزبون</button>` : `<button class="btn ghost" onclick="undoReturn('${inv.id}')">✖ إلغاء إرجاع الطلبية</button>`}
+          ${activeTab==="in_delivery" ? `<button class="btn gold" onclick="openSettle('${inv.id}')">${settlingId===inv.id?'✖ إغلاق':'✅ تسوية'}</button>` : ""}
+          ${activeTab==="delivered" ? `<button class="btn gold" onclick="openSettle('${inv.id}')">${settlingId===inv.id?'✖ إغلاق':'✏️ تعديل التسوية'}</button>` : ""}
         </div>
         ${settleBoxHtml}
         ${deliveredSummaryHtml}
-        ${returnBoxHtml}
       </div>`;
   }).join("");
 
@@ -220,65 +216,6 @@ function renderDeliveredSummary(inv){
       <div style="font-size:12.5px;margin:6px 0;"><b>المبلغ المفروض تسليمه للمتجر:</b> ${esc(payLines)}</div>
       <div style="font-size:12.5px;margin:6px 0;"><b>قيمة التوصيل:</b> ${fmt(cr.deliveryPriceFinal||0)}</div>
     </div>`;
-}
-
-function onReturnClick(invId){
-  const inv = courierData.invoices.find(i=>i.id===invId);
-  if(!inv) return;
-  if(activeTab==="delivered"){
-    // already settled once — ask about the delivery fee before confirming
-    returningId = invId;
-    settlingId = null;
-    render();
-  } else {
-    // not yet settled — nothing collected yet, confirm directly
-    confirmMarkReturned(invId, "");
-  }
-}
-function renderReturnBox(inv){
-  const suggestedFee = inv.courierResolution ? (inv.courierResolution.deliveryPriceFinal||0) : (inv.deliveryPrice||0);
-  return `
-    <div class="settle-box" style="border-color:var(--danger);">
-      <div class="section-title" style="font-size:13px;color:var(--danger);">↩ تأكيد إرجاع الطلبية من الزبون</div>
-      <div class="section-hint">هذه الطلبية سُوِّيت سابقاً — هل استلمت قيمة التوصيل من الزبون؟ إن كانت معك، اكتب المبلغ:</div>
-      <div class="field"><label>قيمة التوصيل التي معي (اتركها 0 إن لم تُستلَم)</label><input type="number" id="rt_fee_${inv.id}" value="${fmt(suggestedFee)}"></div>
-      <div class="actions-row">
-        <button class="btn" style="background:var(--danger);color:#fff;" onclick="submitReturnWithFee('${inv.id}')">✅ تأكيد الإرجاع</button>
-        <button class="btn ghost" onclick="returningId=null; render();">إلغاء</button>
-      </div>
-    </div>`;
-}
-function submitReturnWithFee(invId){
-  const feeEl = document.getElementById("rt_fee_"+invId);
-  const fee = feeEl ? (parseFloat(feeEl.value)||0) : 0;
-  const note = fee>0 ? `المندوب يحتفظ بقيمة توصيل قدرها ${fmt(fee)}` : "لم تُستلَم قيمة التوصيل من الزبون";
-  confirmMarkReturned(invId, note);
-}
-async function confirmMarkReturned(invId, feeNote){
-  try{
-    const id = "crt_" + Date.now() + Math.random().toString(36).slice(2,8);
-    const { error } = await supabaseClient.from("courier_returns").insert({ id, invoice_id: invId, returned: true, delivery_fee_note: feeNote });
-    if(error) throw error;
-    const inv = courierData.invoices.find(i=>i.id===invId);
-    if(inv){ inv.courierReturnedFlag = true; inv.courierReturnFeeNote = feeNote; }
-    returningId = null;
-    settlingId = null;
-    render();
-  }catch(e){
-    alert("تعذّر تسجيل الإرجاع: " + (e && e.message ? e.message : e));
-  }
-}
-async function undoReturn(invId){
-  try{
-    const id = "crt_" + Date.now() + Math.random().toString(36).slice(2,8);
-    const { error } = await supabaseClient.from("courier_returns").insert({ id, invoice_id: invId, returned: false, delivery_fee_note: "" });
-    if(error) throw error;
-    const inv = courierData.invoices.find(i=>i.id===invId);
-    if(inv){ inv.courierReturnedFlag = false; inv.courierReturnFeeNote = ""; }
-    render();
-  }catch(e){
-    alert("تعذّر التراجع عن الإرجاع: " + (e && e.message ? e.message : e));
-  }
 }
 
 function setTab(tab){ activeTab = tab; render(); }
@@ -378,15 +315,15 @@ function renderSettleBox(inv){
       <div class="total-line"><span>إجمالي المستلم</span><span>${fmt(paid)}</span></div>
 
       <div class="field" style="margin-top:10px;">
-        <label>قيمة التوصيل</label>
-        <input type="number" id="st_delivery_price" value="${inv.courierResolution ? (inv.courierResolution.deliveryPriceFinal||0) : (inv.deliveryPrice||0)}">
+        <div style="font-size:12.5px;color:var(--muted);">قيمة التوصيل (ثابتة): <b style="color:var(--text);">${fmt(inv.deliveryPrice||0)}</b></div>
       </div>
       <button class="btn gold" style="width:100%;" onclick="submitSettlement('${inv.id}')">✅ إرسال التسوية</button>
     </div>`;
 }
 
 async function submitSettlement(invId){
-  const deliveryPriceFinal = parseFloat(document.getElementById("st_delivery_price").value)||0;
+  const inv = courierData.invoices.find(i=>i.id===invId);
+  const deliveryPriceFinal = inv ? (inv.deliveryPrice||0) : 0;
   const settlementData = {
     items: settleItems.map(it=>({catId:it.catId, color:it.color, soldQty:it.soldQty, price:it.price})),
     payments: settlePayments.slice(),
