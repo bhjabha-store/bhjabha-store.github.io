@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -2758,7 +2759,23 @@ async function cancelOrder(id){
   const inv = state.pendingInvoices.find(i=>i.id===id);
   if(!inv) return;
   if(inv.status==="resolved"){ alert("لا يمكن إلغاء فاتورة مُسوّاة نهائياً (مُباعة فعلياً) — استخدم زر \"تعديل التسوية\" لإرجاعها بدل ذلك."); return; }
-  if(!(await showCustomConfirm(`سيتم إلغاء الفاتورة #${inv.number} نهائياً — ستظهر في قائمة "المبيعات" كطلبية ملغية. لم يُخصم أي شيء من المخزون أو الحسابات بعد، فلا حاجة لأي تعديل مالي. هل أنت متأكد؟`))) return;
+  if(!(await showCustomConfirm(`سيتم إلغاء الفاتورة #${inv.number} نهائياً — ستظهر في قائمة "المبيعات" كطلبية ملغية. هل أنت متأكد؟`))) return;
+
+  // If the order was already handed off for delivery (courier was on the way or delivered) and the
+  // delivery fee normally goes to the shop's own account (owner-delivered), the fee may still have
+  // been collected from the customer even though the sale itself is being cancelled — this needs to
+  // be credited manually here, since finalizePendingInvoice() (where this normally happens) never runs.
+  const wasDispatched = inv.deliveryStage==="in_delivery" || inv.deliveryStage==="delivered";
+  const feeGoesToAccount = inv.courierType!=="rep" && inv.courierType!=="company";
+  const effectiveFee = (inv.courierResolution && inv.courierResolution.deliveryPriceFinal) ? inv.courierResolution.deliveryPriceFinal : inv.deliveryPrice;
+  if(wasDispatched && feeGoesToAccount && effectiveFee>0 && !inv.deliveryAccountAssigned){
+    if(await showCustomConfirm(`هل استُلمت قيمة التوصيل (${fmtNum(effectiveFee)}) من الزبون رغم إلغاء الطلبية؟ إذا نعم ستُضاف الآن لحساب الكاش (يمكنك تحويلها لحساب آخر لاحقاً من صفحة الحسابات).`)){
+      state.accounts.delivery.entries.push({date: todayStr(), amount: effectiveFee, account: "cash", invoiceNumber: inv.number, cityGroup: inv.cityGroup});
+      inv.deliveryAccountAssigned = "cash";
+      logActivity(`إضافة قيمة توصيل الفاتورة الملغية #${inv.number} (${fmtNum(effectiveFee)}) إلى حساب "كاش"`);
+    }
+  }
+
   inv.status = "cancelled";
   inv.deliveryStage = "pending";
   inv.cancelledDate = todayStr();
@@ -2918,7 +2935,7 @@ function finalizePendingInvoice(){
     ? pending.courierResolution.deliveryPriceFinal : pending.deliveryPrice;
   const deliveryGoesToAccount = pending.courierType !== "rep" && pending.courierType !== "company"; // owner-delivered or unassigned → credits the shop's delivery account; external rep/company keeps the fee
   if(effectiveDeliveryPrice>0 && !pending.deliveryAccountAssigned && resolveDeliveryAccount && deliveryGoesToAccount){
-    state.accounts.delivery.entries.push({date: pending.resolvedDate, amount: effectiveDeliveryPrice, account: resolveDeliveryAccount});
+    state.accounts.delivery.entries.push({date: pending.resolvedDate, amount: effectiveDeliveryPrice, account: resolveDeliveryAccount, invoiceNumber: pending.number, cityGroup: pending.cityGroup});
     pending.deliveryAccountAssigned = resolveDeliveryAccount;
     logActivity(`إضافة قيمة توصيل الفاتورة #${pending.number} (${fmtNum(effectiveDeliveryPrice)}) إلى حساب "${ACCOUNT_LABELS[resolveDeliveryAccount]}"`);
   } else if(effectiveDeliveryPrice>0 && !deliveryGoesToAccount){
@@ -3249,7 +3266,9 @@ function renderInDeliveryPage(){
     const returnBadge = returned ? `<div style="color:var(--danger);font-weight:800;font-size:11.5px;margin-bottom:4px;">⚠ تم إرجاع الطلبية من المندوب${inv.courierReturnFeeNote?" — "+esc(inv.courierReturnFeeNote):""}</div>` : "";
     const actionButtons = returned
       ? `<button class="btn gold viewer-safe" onclick="cancelOrder('${inv.id}')">✅ إلغاء الطلبية نهائياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button>`
-      : `<button class="btn gold viewer-safe" onclick="startCourierManualSettle('${inv.id}')">📝 تسجيل التسليم يدوياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="undoAssignCourier('${inv.id}')">↩ إلغاء التحويل</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`;
+      : (inv.courierType==="rep"
+        ? `<button class="btn gold viewer-safe" onclick="startCourierManualSettle('${inv.id}')">📝 تسجيل التسليم يدوياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="undoAssignCourier('${inv.id}')">↩ إلغاء التحويل</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`
+        : `<button class="btn gold viewer-safe" onclick="startResolvePending('${inv.id}')">✅ تسوية</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="undoAssignCourier('${inv.id}')">↩ إلغاء التحويل</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`);
     return `
     <tr ${returned?'style="background:var(--danger-soft);"':''}><td><span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span></td><td>${fmtDate(inv.date)}</td><td>${esc(inv.phone1||"-")}${inv.phone2?" / "+esc(inv.phone2):""}</td>
       ${nameCell}<td>${esc(loc.city)}</td><td>${esc(loc.zone)}</td><td>${esc(loc.address)}</td>
@@ -3339,27 +3358,16 @@ function renderDeliveredPage(){
       <td style="display:flex;flex-direction:column;align-items:flex-start;gap:6px;">${returnBadge}<div style="display:flex;gap:6px;flex-wrap:wrap;">${actionButtons}</div></td></tr>`;
   }).join("") || `<tr><td colspan="11" class="empty-row">لا توجد طلبيات في هذا التصنيف</td></tr>`;
 
-  const tableHead = `<tr><th>الفاتورة</th><th>التاريخ</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>عدد القطع المُباعة</th><th>المبلغ</th><th>طريقة الدفع</th><th>قيمة التوصيل</th><th></th></tr>`;
-  const tableHeadWithName = `<tr><th>الفاتورة</th><th>التاريخ</th><th>اسم المندوب/الشركة</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>عدد القطع المُباعة</th><th>المبلغ</th><th>طريقة الدفع</th><th>قيمة التوصيل</th><th></th></tr>`;
-  const ownerList = deliveredList.filter(i=>i.courierType==="owner");
+  const tableHeadWithName = `<tr><th>الفاتورة</th><th>التاريخ</th><th>اسم المندوب</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>عدد القطع المُباعة</th><th>المبلغ</th><th>طريقة الدفع</th><th>قيمة التوصيل</th><th></th></tr>`;
   const repList = deliveredList.filter(i=>i.courierType==="rep");
-  const companyList = deliveredList.filter(i=>i.courierType==="company");
 
   return `
     <div class="section">
-      <div class="section-hint">تم تسليمها للزبون وتسجيل بيانات أولية من المندوب — راجع البيانات واضغط "تسوية نهائية" لتحديث المخزون والحسابات فعلياً</div>
-    </div>
-    <div class="section">
-      <div class="section-title">🏪 صاحب المتجر بهاء (${ownerList.length})</div>
-      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHead}</thead><tbody>${buildRows(ownerList, false)}</tbody></table></div>
+      <div class="section-hint">هذه المرحلة خاصة بالمندوبين فقط — تسجيل التسليم من صاحب المتجر أو شركات التوصيل يذهب مباشرة للتسوية النهائية من صفحة "قيد التوصيل". راجع البيانات واضغط "تسوية نهائية" لتحديث المخزون والحسابات فعلياً</div>
     </div>
     <div class="section">
       <div class="section-title">🚴 مندوبون (${repList.length})</div>
       <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHeadWithName}</thead><tbody>${buildRows(repList, true)}</tbody></table></div>
-    </div>
-    <div class="section">
-      <div class="section-title">🚛 شركات توصيل (${companyList.length})</div>
-      <div class="table-wrap" style="max-height:420px;"><table><thead>${tableHeadWithName}</thead><tbody>${buildRows(companyList, true)}</tbody></table></div>
     </div>
   `;
 }
@@ -3726,10 +3734,10 @@ function renderDelivery(){
   acc.entries.forEach(e=>{ const m=(e.date||"").slice(0,7)||"غير محدد"; byMonth[m]=(byMonth[m]||0)+Number(e.amount||0); });
   const monthRows = Object.keys(byMonth).sort().map(m=>`<tr><td>${m}</td><td>${fmt(byMonth[m])}</td></tr>`).join("") || `<tr><td colspan="2" class="empty-row">لا توجد عمليات جديدة هذه الجلسة</td></tr>`;
   const rows = acc.entries.map((e,i)=>`
-    <tr><td>${fmtDate(e.date)}</td><td>${fmt(e.amount)}</td>
+    <tr><td>${fmtDate(e.date)}</td><td>${e.invoiceNumber ? `<span class="invoice-badge">${cityGroupLabel(e.cityGroup||"tripoli")} #${e.invoiceNumber}</span>` : `<span class="tag">يدوي</span>`}</td><td>${fmt(e.amount)}</td>
     <td><span class="tag ${accountTagClass(e.account)}">${ACCOUNT_LABELS[e.account||'cash']}</span></td>
     <td><button class="btn ghost" onclick="deleteSimpleEntry('delivery','entries',${i})">حذف</button></td></tr>`
-  ).join("") || `<tr><td colspan="4" class="empty-row">لا توجد عمليات توصيل مضافة بعد</td></tr>`;
+  ).join("") || `<tr><td colspan="5" class="empty-row">لا توجد عمليات توصيل مضافة بعد</td></tr>`;
   return `
     <div class="kpi-grid"><div class="kpi" style="--accent:var(--wine)"><div class="kpi-label">إجمالي قيم التوصيل (الكلي)</div><div class="kpi-value">${fmt(total)}</div></div></div>
     <div class="section">
@@ -3758,7 +3766,7 @@ function renderDelivery(){
           <div class="field"><label>الحساب</label><select id="dv_account">${accountOptionsHtml('cash')}</select></div>
         </div>
         <button class="btn" onclick="addDelivery()">إضافة</button>
-        <div class="table-wrap" style="margin-top:14px;"><table><thead><tr><th>التاريخ</th><th>القيمة</th><th>الحساب</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>
+        <div class="table-wrap" style="margin-top:14px;"><table><thead><tr><th>التاريخ</th><th>الفاتورة</th><th>القيمة</th><th>الحساب</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>
       <div class="section"><div class="section-title">📅 إجمالي التوصيل الشهري (العمليات الجديدة)</div>
         <table><thead><tr><th>الشهر</th><th>الإجمالي</th></tr></thead><tbody>${monthRows}</tbody></table></div>
     </div>`;
