@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -23,6 +22,9 @@
   --gold:#A9793B; --gold-soft:#F4EADA;
   --teal:#2F5D57; --teal-soft:#E4EEEB;
   --danger:#B3423F; --danger-soft:#F6E4E2;
+  --orange:#B8600F; --orange-soft:#FCEBD9;
+  --yellow:#9A7F0A; --yellow-soft:#FBF3D0;
+  --green:#3E7C55; --green-soft:#E3F0E6;
   --muted:#75695A; --border:#E9E1D3; --text:#2B2620;
 }
 *{box-sizing:border-box;}
@@ -397,7 +399,8 @@ function defaultState(){
     _v19CourierDelivery: true,
     _v20RepsCompanies: true,
     _v21OtherZone: true,
-    _v22CancelReturn: true
+    _v22CancelReturn: true,
+    _v23NonReceipt: true
   };
 }
 function generateBarcode(){
@@ -531,6 +534,24 @@ let resolvingPendingId = null;
 let resolveDraftItems = [];
 let resolveDraftPayments = [];
 let resolveDeliveryAccount = "cash";
+let editingDeliveryFeeId = null;
+function correctDeliveryFeeAmount(id){
+  if(currentRole==="viewer"){ alert("وضع المشاهدة فقط لا يسمح بتعديل القيم المالية."); return; }
+  const inv = state.pendingInvoices.find(i=>i.id===id);
+  if(!inv) return;
+  const newAmount = parseFloat(document.getElementById("rs_delivery_fee_correction").value);
+  if(!newAmount || newAmount<0){ alert("أدخل قيمة صحيحة (0 أو أكثر)"); return; }
+  const entry = state.accounts.delivery.entries.find(e=>e.invoiceNumber===inv.number && e.cityGroup===inv.cityGroup);
+  if(!entry){ alert("تعذّر العثور على قيد التوصيل الأصلي لهذه الفاتورة في الحسابات — قد يكون حُذف يدوياً."); return; }
+  const oldAmount = entry.amount;
+  entry.amount = newAmount;
+  inv.deliveryPrice = newAmount;
+  if(inv.courierResolution) inv.courierResolution.deliveryPriceFinal = newAmount;
+  logActivity(`تصحيح قيمة توصيل الفاتورة #${inv.number} من ${fmtNum(oldAmount)} إلى ${fmtNum(newAmount)}`);
+  editingDeliveryFeeId = null;
+  saveState(); render();
+  autoPublishCourierInvoices();
+}
 let customerOrdersCache = [];
 let onlineStoreLastPublished = null;
 let onlineStoreChannel = null;
@@ -862,6 +883,12 @@ async function loadState(){
     });
     state._v22CancelReturn = true;
   }
+  if(!state._v23NonReceipt){
+    state.pendingInvoices.forEach(inv=>{
+      if(inv.nonReceiptReason===undefined) inv.nonReceiptReason = "";
+    });
+    state._v23NonReceipt = true;
+  }
   if(!state.nextBarcodeSeq) state.nextBarcodeSeq = 1;
   if(!state.barcodeIndex) state.barcodeIndex = {};
   state.categories.forEach(cat=>{
@@ -974,6 +1001,32 @@ function invoiceLocationLabels(inv){
   const zone = inv.cityGroup==="tripoli" ? (inv.zone || "-") : (inv.otherZone || "-");
   const address = inv.city || "-";
   return { city, zone, address };
+}
+function getInvoiceStatusColor(inv){
+  if(inv.status==="cancelled") return "red";
+  if(inv.nonReceiptReason) return "red";
+  if(inv.status==="returned") return "orange";
+  if(inv.status==="resolved"){
+    if(inv.returnedNote && inv.returnedNote.startsWith("مرتجع جزئي")) return "yellow";
+    return "green";
+  }
+  if(inv.courierResolution){
+    const totalOrigQty = inv.items.reduce((s,it)=>s+(Number(it.qty)||0),0);
+    const totalSoldQty = inv.courierResolution.items.reduce((s,it)=>s+(Number(it.soldQty)||0),0);
+    if(totalOrigQty>0 && totalSoldQty===0) return "orange";
+    if(totalSoldQty<totalOrigQty) return "yellow";
+    return "green";
+  }
+  return null;
+}
+function statusColorStyle(color){
+  const map = { red:"var(--danger-soft)", orange:"var(--orange-soft)", yellow:"var(--yellow-soft)", green:"var(--green-soft)" };
+  return color ? `background:${map[color]};` : "";
+}
+function statusColorBadge(color, label){
+  const map = { red:["var(--danger)","#fff"], orange:["var(--orange)","#fff"], yellow:["var(--yellow)","#fff"], green:["var(--green)","#fff"] };
+  if(!color) return "";
+  return `<span class="tag" style="background:${map[color][0]};color:${map[color][1]};">${label}</span>`;
 }
 
 const STORE_NAME = "متجر بحجابها";
@@ -1555,6 +1608,7 @@ function clearPendingFormState(){
   manualSettleInvoiceId = null;
   resolvingPendingId = null;
   editingPendingId = null;
+  editingDeliveryFeeId = null;
   resolveDraftItems = []; resolveDraftPayments = [];
 }
 function goTo(view){
@@ -2500,12 +2554,21 @@ function allSalesRecordsForDisplay(){
   records.sort((a,b)=> (b.date||"").localeCompare(a.date||"") || b.number-a.number);
   return records;
 }
+function salesRecordColor(r){
+  if(r.isCancelled) return "red";
+  if(r.statusLabel==="مرتجعة بالكامل") return "orange";
+  if(r.statusLabel==="مرتجع جزئي") return "yellow";
+  return "green";
+}
 function renderSalesPage(){
   const rs = renderResolveScreen();
   if(rs) return rs;
 
   let records = allSalesRecordsForDisplay();
   if(salesFilterMode==="cancelled"){ records = records.filter(r=>r.isCancelled); }
+  else if(salesFilterMode==="full_return"){ records = records.filter(r=>!r.isCancelled && r.statusLabel==="مرتجعة بالكامل"); }
+  else if(salesFilterMode==="partial_return"){ records = records.filter(r=>!r.isCancelled && r.statusLabel==="مرتجع جزئي"); }
+  else if(salesFilterMode==="completed"){ records = records.filter(r=>!r.isCancelled && !r.statusLabel); }
   const tripoliRecords = records.filter(r=>r.cityGroup==="tripoli");
   const otherRecords = records.filter(r=>r.cityGroup==="other");
 
@@ -2513,21 +2576,21 @@ function renderSalesPage(){
     const rows = list.map(r=>{
       const qty = r.items.reduce((s,it)=>s+(Number(it.qty)||0),0);
       const loc = invoiceLocationLabels(r);
+      const color = salesRecordColor(r);
       const editButtons = r.source==="فاتورة مبدئية" && !r.isCancelled
         ? `<button class="btn ghost" onclick="startResolvePending('${r.id}')">✏️ تعديل التسوية</button><button class="btn ghost" onclick="editPendingInvoice('${r.id}')">✎ تعديل كامل</button>`
         : "";
       const cancelButton = r.source==="فاتورة مبدئية" && !r.isCancelled
         ? `<button class="btn ghost" onclick="cancelOrder('${r.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`
         : "";
-      const rowStyle = r.isCancelled ? 'style="background:var(--danger-soft);"' : "";
       const numberCell = r.isCancelled
         ? `<span class="invoice-badge" style="background:var(--danger);color:#fff;">${cityGroupLabel(r.cityGroup)} #${r.number}</span>`
         : `<span class="invoice-badge">${cityGroupLabel(r.cityGroup)} #${r.number}</span>`;
       const statusCell = r.isCancelled
-        ? `<span style="color:var(--danger);font-weight:800;">طلبية ملغية</span>`
-        : (r.statusLabel ? `<span class="tag" style="background:var(--danger-soft);color:var(--danger);">${r.statusLabel}</span>` : `<span class="tag teal">مكتملة</span>`);
+        ? statusColorBadge("red","🔴 ملغية")
+        : (color==="orange" ? statusColorBadge("orange","🟠 مرتجع كامل") : (color==="yellow" ? statusColorBadge("yellow","🟡 مرتجع جزئي") : statusColorBadge("green","🟢 مكتملة")));
       return `
-      <tr ${rowStyle}><td>${numberCell}</td><td>${fmtDate(r.date)}</td><td>${esc(r.phone1||"-")}${r.phone2?" / "+esc(r.phone2):""}</td>
+      <tr style="${statusColorStyle(color)}"><td>${numberCell}</td><td>${fmtDate(r.date)}</td><td>${esc(r.phone1||"-")}${r.phone2?" / "+esc(r.phone2):""}</td>
         <td>${esc(loc.city)}</td><td>${esc(loc.zone)}</td><td>${esc(loc.address)}</td>
         <td>${fmtNum(qty)}</td><td>${fmt(r.totalAmount)}</td><td>${esc(paymentsSummary(r.payments))}${r.cardFeeApplied?` <span class="tag">عمولة ${fmtNum(r.cardFeeAmount)}</span>`:""}</td>
         <td>${statusCell}</td>
@@ -2544,9 +2607,12 @@ function renderSalesPage(){
     <div class="section">
       <div class="section-title">💳 فواتير المبيعات (سجل الفواتير المسوّاة)</div>
       <div class="section-hint">هذا السجل هو فواتير البيع الفعلية — كل فاتورة تُصدر من صفحة "فواتير مبدئية" بعد تسويتها، وتحمل نفس رقم الفاتورة المبدئية دائماً حتى لو تغيّر المرتجع لاحقاً. لتعديل فاتورة بعد التسوية اضغط "تعديل التسوية" أو "تعديل كامل". كل تصنيف معروض بجدوله المستقل.</div>
-      <div style="display:flex;gap:8px;margin-top:10px;">
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
         <button class="btn ${salesFilterMode==='all'?'gold':'ghost'}" onclick="setSalesFilterMode('all')">الكل</button>
-        <button class="btn ${salesFilterMode==='cancelled'?'gold':'ghost'}" onclick="setSalesFilterMode('cancelled')">❌ الطلبيات الملغية فقط</button>
+        <button class="btn ${salesFilterMode==='cancelled'?'gold':'ghost'}" onclick="setSalesFilterMode('cancelled')" style="${salesFilterMode==='cancelled'?'':'color:var(--danger);border-color:var(--danger);'}">🔴 ملغية</button>
+        <button class="btn ${salesFilterMode==='full_return'?'gold':'ghost'}" onclick="setSalesFilterMode('full_return')" style="${salesFilterMode==='full_return'?'':'color:var(--orange);border-color:var(--orange);'}">🟠 مرتجع كامل</button>
+        <button class="btn ${salesFilterMode==='partial_return'?'gold':'ghost'}" onclick="setSalesFilterMode('partial_return')" style="${salesFilterMode==='partial_return'?'':'color:var(--yellow);border-color:var(--yellow);'}">🟡 مرتجع جزئي</button>
+        <button class="btn ${salesFilterMode==='completed'?'gold':'ghost'}" onclick="setSalesFilterMode('completed')" style="${salesFilterMode==='completed'?'':'color:var(--green);border-color:var(--green);'}">🟢 مكتملة</button>
       </div>
     </div>
     <div class="section">
@@ -2629,7 +2695,7 @@ function savePendingInvoice(){
     const invoice = {
       id:"pdinv_"+Math.random().toString(36).slice(2), number, cityGroup,
       date, phone1, phone2, city, notes, zone, deliveryPrice, otherCityName, otherZone, deliveryAccountAssigned: null,
-      courierType: null, courierName: "", deliveryStage: "pending", courierResolution: null, courierReturnedFlag: false, courierReturnFeeNote: "", cancelledDate: null,
+      courierType: null, courierName: "", deliveryStage: "pending", courierResolution: null, courierReturnedFlag: false, courierReturnFeeNote: "", cancelledDate: null, nonReceiptReason: "",
       items,
       totalAmount: pdDraftTotal(),
       status: check.ok ? "pending" : "shortage", payments: [], cardFeeApplied:false, cardFeeAmount:0, resolvedDate:null, returnedNote:""
@@ -2750,6 +2816,17 @@ async function undoAssignCourier(id){
   if(!inv) return;
   inv.courierType = null; inv.courierName = ""; inv.deliveryStage = "pending"; inv.courierResolution = null;
   logActivity(`إلغاء تحويل الفاتورة #${inv.number} للتوصيل`);
+  await saveState();
+  render();
+  await autoPublishCourierInvoices();
+}
+async function revertNonReceipt(id){
+  if(currentRole==="viewer"){ alert("وضع المشاهدة فقط لا يسمح بهذا الإجراء."); return; }
+  const inv = state.pendingInvoices.find(i=>i.id===id);
+  if(!inv) return;
+  if(!(await showCustomConfirm(`إعادة الفاتورة #${inv.number} إلى حالتها الطبيعية في "قيد التوصيل"؟`))) return;
+  inv.nonReceiptReason = "";
+  logActivity(`إعادة الفاتورة #${inv.number} إلى قيد التوصيل بعد إشعار عدم الاستلام`);
   await saveState();
   render();
   await autoPublishCourierInvoices();
@@ -2992,10 +3069,10 @@ function renderResolveScreen(){
           </div>
           <div class="total-line"><span>إجمالي المُباع فعلياً</span><span>${fmt(soldTotal)}</span></div>
 
+          ${soldTotal>0 ? `
           <div class="draft-box" style="margin-top:16px;">
             <div class="section-title" style="font-size:13px;">💰 طريقة الدفع للجزء المُباع فقط</div>
             ${feeHint}
-            <div class="section-hint">إذا كانت كل البنود مرتجعة (المُباع = 0 للجميع)، لا حاجة لإضافة دفع — فقط اضغط "تأكيد" لإغلاق الفاتورة كمرتجعة بالكامل</div>
             <div class="form-row">
               <div class="field"><label>الحساب</label><select id="rs_pay_account">${accountOptionsHtml('cash')}</select></div>
               <div class="field"><label>المبلغ</label><input type="number" step="0.01" id="rs_pay_amount"></div>
@@ -3005,15 +3082,32 @@ function renderResolveScreen(){
               <table><thead><tr><th>الحساب</th><th>المبلغ</th><th></th></tr></thead><tbody>${paymentsRows}</tbody></table>
             </div>
             <div class="total-line"><span>إجمالي المدفوع</span><span>${fmt(paid)}</span></div>
-            ${soldTotal>0 ? `<div class="total-line" style="color:${remaining===0?'var(--teal)':'var(--danger)'};"><span>المتبقي</span><span>${fmt(remaining)}</span></div>` : ""}
-          </div>
+            <div class="total-line" style="color:${remaining===0?'var(--teal)':'var(--danger)'};"><span>المتبقي</span><span>${fmt(remaining)}</span></div>
+          </div>` : `
+          <div class="hint-box" style="background:#FCEBD9;color:#B8600F;font-weight:700;margin-top:16px;">🟠 هذه الفاتورة مرتجعة بالكامل — لا حاجة لإدخال طريقة الدفع، يكفي فقط تأكيد قيمة التوصيل أدناه إن وُجدت</div>`}
 
           ${(()=>{
             const effPrice = (pending.courierResolution && pending.courierResolution.deliveryPriceFinal!==undefined && pending.courierResolution.deliveryPriceFinal!==null) ? pending.courierResolution.deliveryPriceFinal : pending.deliveryPrice;
             const goesToAccount = pending.courierType !== "rep" && pending.courierType !== "company";
             if(!(effPrice>0)) return "";
             if(pending.deliveryAccountAssigned){
-              return `<div class="hint-box hint-ok">✅ تمت إضافة قيمة التوصيل (${fmt(effPrice)}${pending.zone?" — منطقة "+esc(pending.zone):""}) إلى حساب "${ACCOUNT_LABELS[pending.deliveryAccountAssigned]}" مسبقاً</div>`;
+              if(editingDeliveryFeeId===pending.id){
+                return `<div class="draft-box" style="margin-top:16px;">
+                    <div class="section-title" style="font-size:13px;">✎ تصحيح قيمة التوصيل المُضافة مسبقاً</div>
+                    <div class="section-hint">القيمة الحالية في حساب "${ACCOUNT_LABELS[pending.deliveryAccountAssigned]}": ${fmt(effPrice)}. أدخل القيمة الصحيحة وسيُحدَّث الحساب فوراً بالفرق.</div>
+                    <div class="form-row">
+                      <div class="field"><label>القيمة الصحيحة</label><input type="number" step="0.01" id="rs_delivery_fee_correction" value="${effPrice}"></div>
+                    </div>
+                    <div style="display:flex;gap:10px;">
+                      <button class="btn gold" onclick="correctDeliveryFeeAmount('${pending.id}')">💾 تحديث القيمة</button>
+                      <button class="btn ghost" onclick="editingDeliveryFeeId=null; render();">إلغاء</button>
+                    </div>
+                  </div>`;
+              }
+              return `<div class="hint-box hint-ok" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+                <span>✅ تمت إضافة قيمة التوصيل (${fmt(effPrice)}${pending.zone?" — منطقة "+esc(pending.zone):""}) إلى حساب "${ACCOUNT_LABELS[pending.deliveryAccountAssigned]}" مسبقاً</span>
+                <button class="btn ghost" style="background:#fff;" onclick="editingDeliveryFeeId='${pending.id}'; render();">✎ تعديل القيمة</button>
+              </div>`;
             }
             if(!goesToAccount){
               return `<div class="hint-box hint-warn">🚚 قيمة التوصيل (${fmt(effPrice)}) تبقى لدى ${esc(pending.courierName||"المندوب/الشركة")} ولن تُضاف لحساب المتجر</div>`;
@@ -3261,16 +3355,16 @@ function renderInDeliveryPage(){
   const buildRows = (list, showCourierName) => list.map(inv=>{
     const qty = inv.items.reduce((s,it)=>s+(Number(it.qty)||0),0);
     const loc = invoiceLocationLabels(inv);
-    const returned = inv.courierReturnedFlag;
+    const nonReceipt = !!inv.nonReceiptReason;
     const nameCell = showCourierName ? `<td>${esc(inv.courierName||"-")}</td>` : "";
-    const returnBadge = returned ? `<div style="color:var(--danger);font-weight:800;font-size:11.5px;margin-bottom:4px;">⚠ تم إرجاع الطلبية من المندوب${inv.courierReturnFeeNote?" — "+esc(inv.courierReturnFeeNote):""}</div>` : "";
-    const actionButtons = returned
-      ? `<button class="btn gold viewer-safe" onclick="cancelOrder('${inv.id}')">✅ إلغاء الطلبية نهائياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button>`
+    const returnBadge = nonReceipt ? `<div style="color:var(--danger);font-weight:800;font-size:11.5px;margin-bottom:4px;">🔴 لم يستلم الزبون الطلبية — ${esc(inv.nonReceiptReason)}</div>` : "";
+    const actionButtons = nonReceipt
+      ? `<button class="btn gold viewer-safe" onclick="revertNonReceipt('${inv.id}')">↩ عودة إلى قيد التسليم</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`
       : (inv.courierType==="rep"
         ? `<button class="btn gold viewer-safe" onclick="startCourierManualSettle('${inv.id}')">📝 تسجيل التسليم يدوياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="undoAssignCourier('${inv.id}')">↩ إلغاء التحويل</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`
         : `<button class="btn gold viewer-safe" onclick="startResolvePending('${inv.id}')">✅ تسوية</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="undoAssignCourier('${inv.id}')">↩ إلغاء التحويل</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`);
     return `
-    <tr ${returned?'style="background:var(--danger-soft);"':''}><td><span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span></td><td>${fmtDate(inv.date)}</td><td>${esc(inv.phone1||"-")}${inv.phone2?" / "+esc(inv.phone2):""}</td>
+    <tr style="${nonReceipt?statusColorStyle('red'):''}"><td><span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span></td><td>${fmtDate(inv.date)}</td><td>${esc(inv.phone1||"-")}${inv.phone2?" / "+esc(inv.phone2):""}</td>
       ${nameCell}<td>${esc(loc.city)}</td><td>${esc(loc.zone)}</td><td>${esc(loc.address)}</td>
       <td>${fmtNum(qty)}</td><td>${fmt(inv.totalAmount)}</td>
       <td style="display:flex;flex-direction:column;align-items:flex-start;gap:6px;">${returnBadge}<div style="display:flex;gap:6px;flex-wrap:wrap;">${actionButtons}</div></td></tr>`;
@@ -3345,17 +3439,15 @@ function renderDeliveredPage(){
     const cr = inv.courierResolution;
     const loc = invoiceLocationLabels(inv);
     const soldQty = cr ? cr.items.reduce((s,it)=>s+(Number(it.soldQty)||0),0) : 0;
-    const returned = inv.courierReturnedFlag;
+    const color = getInvoiceStatusColor(inv);
     const nameCell = showCourierName ? `<td>${esc(inv.courierName||"-")}</td>` : "";
-    const returnBadge = returned ? `<div style="color:var(--danger);font-weight:800;font-size:11.5px;margin-bottom:4px;">⚠ تم إرجاع الطلبية من المندوب${inv.courierReturnFeeNote?" — "+esc(inv.courierReturnFeeNote):""}</div>` : "";
-    const actionButtons = returned
-      ? `<button class="btn gold viewer-safe" onclick="cancelOrder('${inv.id}')">✅ إلغاء الطلبية نهائياً</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button>`
-      : `<button class="btn gold viewer-safe" onclick="startResolvePending('${inv.id}')">✅ تسوية نهائية</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="deleteFromDelivered('${inv.id}')">🗑 حذف</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`;
+    const statusBadge = color==="orange" ? statusColorBadge("orange","🟠 مرتجع كامل") : (color==="yellow" ? statusColorBadge("yellow","🟡 مرتجع جزئي") : (color==="green" ? statusColorBadge("green","🟢 مكتمل") : ""));
+    const actionButtons = `<button class="btn gold viewer-safe" onclick="startResolvePending('${inv.id}')">✅ تسوية نهائية</button><button class="btn ghost viewer-safe" onclick="printPendingInvoice('${inv.id}')">🖨 طباعة</button><button class="btn ghost" onclick="deleteFromDelivered('${inv.id}')">🗑 حذف</button><button class="btn ghost" onclick="cancelOrder('${inv.id}')" style="color:var(--danger);border-color:var(--danger);">❌ إلغاء الطلبية</button>`;
     return `
-    <tr ${returned?'style="background:var(--danger-soft);"':''}><td><span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span></td><td>${fmtDate(inv.date)}</td>
+    <tr style="${statusColorStyle(color)}"><td><span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span> ${statusBadge}</td><td>${fmtDate(inv.date)}</td>
       ${nameCell}<td>${esc(loc.city)}</td><td>${esc(loc.zone)}</td><td>${esc(loc.address)}</td>
       <td>${fmtNum(soldQty)}</td><td>${fmt(cr ? cr.items.reduce((s,it)=>s+(it.price*it.soldQty),0) : 0)}</td><td>${cr ? esc(paymentsSummary(cr.payments)) : "-"}</td><td>${cr ? fmt(cr.deliveryPriceFinal||0) : "-"}</td>
-      <td style="display:flex;flex-direction:column;align-items:flex-start;gap:6px;">${returnBadge}<div style="display:flex;gap:6px;flex-wrap:wrap;">${actionButtons}</div></td></tr>`;
+      <td style="display:flex;gap:6px;flex-wrap:wrap;">${actionButtons}</td></tr>`;
   }).join("") || `<tr><td colspan="11" class="empty-row">لا توجد طلبيات في هذا التصنيف</td></tr>`;
 
   const tableHeadWithName = `<tr><th>الفاتورة</th><th>التاريخ</th><th>اسم المندوب</th><th>المدينة</th><th>المنطقة</th><th>العنوان</th><th>عدد القطع المُباعة</th><th>المبلغ</th><th>طريقة الدفع</th><th>قيمة التوصيل</th><th></th></tr>`;
@@ -4007,7 +4099,7 @@ function buildCourierInvoicesData(){
     courierType: inv.courierType, courierName: inv.courierName,
     deliveryStage: inv.deliveryStage,
     courierResolution: inv.courierResolution,
-    courierReturnedFlag: inv.courierReturnedFlag, courierReturnFeeNote: inv.courierReturnFeeNote,
+    nonReceiptReason: inv.nonReceiptReason,
     totalAmount: inv.totalAmount,
     items: inv.items.map(it=>({catId:it.catId, catName:it.catName, color:it.color, price:it.price, qty:it.qty}))
   }));
@@ -4168,9 +4260,8 @@ function setupCourierReturnsRealtime(){
         if(!row) return;
         const inv = state.pendingInvoices.find(i=>i.id===row.invoice_id);
         if(inv){
-          inv.courierReturnedFlag = !!row.returned;
-          inv.courierReturnFeeNote = row.delivery_fee_note || "";
-          logActivity(`${row.returned?"إشعار إرجاع":"إلغاء إشعار إرجاع"} من المندوب للفاتورة #${inv.number}`);
+          inv.nonReceiptReason = row.returned ? (row.delivery_fee_note || "لم يستلم الزبون الطلبية") : "";
+          logActivity(`${row.returned?"إشعار عدم استلام الزبون":"إلغاء إشعار عدم الاستلام"} من المندوب للفاتورة #${inv.number}`);
           saveState();
           render();
           autoPublishCourierInvoices();
@@ -4201,7 +4292,7 @@ async function importCustomerOrder(orderId){
     id:"pdinv_"+Math.random().toString(36).slice(2), number, cityGroup,
     date: todayStr(), phone1: od.phone1||"", phone2: od.phone2||"", city: od.city||"", otherCityName, otherZone, notes: "طلب من المتجر الإلكتروني" + (od.notes?" — "+od.notes:""),
     zone, deliveryPrice: 0, deliveryAccountAssigned: null,
-    courierType: null, courierName: "", deliveryStage: "pending", courierResolution: null, courierReturnedFlag: false, courierReturnFeeNote: "", cancelledDate: null,
+    courierType: null, courierName: "", deliveryStage: "pending", courierResolution: null, courierReturnedFlag: false, courierReturnFeeNote: "", cancelledDate: null, nonReceiptReason: "",
     items,
     totalAmount: Math.round(totalAmount*100)/100,
     status: check.ok ? "pending" : "shortage", payments: [], cardFeeApplied:false, cardFeeAmount:0, resolvedDate:null, returnedNote:""
