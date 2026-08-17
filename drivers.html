@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
@@ -70,6 +69,7 @@ let loggedInType = ""; // "rep" | "company"
 let loggedInName = "";
 let activeTab = "in_delivery"; // "in_delivery" | "delivered"
 let settlingId = null;
+let nonReceiptPromptId = null;
 let settleItems = [];
 let settlePayments = [];
 
@@ -146,12 +146,15 @@ function render(){
     const itemsRows = inv.items.map(it=>`<tr><td>${esc(it.catName)}</td><td>${esc(it.color||"-")}</td><td>${fmt(it.price)}</td><td>${fmt(it.qty)}</td></tr>`).join("");
     const settleBoxHtml = settlingId===inv.id ? renderSettleBox(inv) : "";
     const deliveredSummaryHtml = (activeTab==="delivered" && settlingId!==inv.id) ? renderDeliveredSummary(inv) : "";
+    const nonReceipt = activeTab==="in_delivery" && !!inv.nonReceiptReason;
+    const nonReceiptBoxHtml = nonReceiptPromptId===inv.id ? renderNonReceiptBox(inv) : "";
     return `
-      <div class="invoice-card">
+      <div class="invoice-card" ${nonReceipt?'style="border:2px solid var(--danger);background:var(--danger-soft);"':''}>
         <div class="invoice-head">
           <span class="invoice-badge">${cityGroupLabel(inv.cityGroup)} #${inv.number}</span>
-          ${activeTab==="delivered" ? `<span class="tag done">✅ تم التسليم</span>` : ""}
+          ${nonReceipt ? `<span class="tag" style="background:var(--danger);color:#fff;">🔴 لم يستلم الزبون</span>` : (activeTab==="delivered" ? `<span class="tag done">✅ تم التسليم</span>` : "")}
         </div>
+        ${nonReceipt ? `<div style="font-size:11.5px;color:var(--danger);font-weight:700;margin-bottom:6px;">السبب: ${esc(inv.nonReceiptReason)}</div>` : ""}
         <div class="invoice-meta">
           📅 ${esc(inv.date)}<br>
           📞 ${esc(inv.phone1||"-")}${inv.phone2?" / "+esc(inv.phone2):""} <button class="btn ghost" style="padding:2px 8px;font-size:10.5px;" onclick="copyPhone('${esc(inv.phone1||"").replace(/'/g,"\\'")}')">📋 نسخ</button><br>
@@ -163,11 +166,14 @@ function render(){
         <table><thead><tr><th>الصنف</th><th>اللون</th><th>السعر</th><th>العدد</th></tr></thead><tbody>${itemsRows}</tbody></table>
         <div class="total-line"><span>إجمالي عدد القطع: ${fmt(totalQty)}</span><span>${fmt(inv.totalAmount)}</span></div>
         <div class="actions-row">
-          ${activeTab==="in_delivery" ? `<button class="btn gold" onclick="openSettle('${inv.id}')">${settlingId===inv.id?'✖ إغلاق':'✅ تسوية'}</button>` : ""}
+          ${activeTab==="in_delivery" && !nonReceipt ? `<button class="btn gold" onclick="openSettle('${inv.id}')">${settlingId===inv.id?'✖ إغلاق':'✅ تسوية'}</button>` : ""}
           ${activeTab==="delivered" ? `<button class="btn gold" onclick="openSettle('${inv.id}')">${settlingId===inv.id?'✖ إغلاق':'✏️ تعديل التسوية'}</button>` : ""}
+          ${activeTab==="in_delivery" && !nonReceipt ? `<button class="btn" style="background:var(--danger);color:#fff;" onclick="openNonReceiptBox('${inv.id}')">🔴 عدم استلام الزبون</button>` : ""}
+          ${nonReceipt ? `<button class="btn gold" onclick="revertNonReceiptCourier('${inv.id}')">↩ عودة إلى قيد التسليم</button>` : ""}
         </div>
         ${settleBoxHtml}
         ${deliveredSummaryHtml}
+        ${nonReceiptBoxHtml}
       </div>`;
   }).join("");
 
@@ -199,6 +205,50 @@ function renderDeliveredTotals(deliveredList){
       </div>
     </div>`;
 }
+function openNonReceiptBox(invId){
+  nonReceiptPromptId = nonReceiptPromptId===invId ? null : invId;
+  settlingId = null;
+  render();
+}
+function renderNonReceiptBox(inv){
+  return `
+    <div class="settle-box" style="border-color:var(--danger);">
+      <div class="section-title" style="font-size:13px;color:var(--danger);">🔴 سبب عدم استلام الزبون</div>
+      <div class="field"><input type="text" id="nr_reason_${inv.id}" placeholder="اكتب السبب (مثال: لم يرد على الهاتف)"></div>
+      <div class="actions-row">
+        <button class="btn" style="background:var(--danger);color:#fff;" onclick="submitNonReceipt('${inv.id}')">✅ حفظ</button>
+        <button class="btn ghost" onclick="nonReceiptPromptId=null; render();">إلغاء</button>
+      </div>
+    </div>`;
+}
+async function submitNonReceipt(invId){
+  const reasonEl = document.getElementById("nr_reason_"+invId);
+  const reason = reasonEl ? reasonEl.value.trim() : "";
+  if(!reason){ alert("يرجى كتابة سبب عدم الاستلام"); return; }
+  try{
+    const id = "crt_" + Date.now() + Math.random().toString(36).slice(2,8);
+    const { error } = await supabaseClient.from("courier_returns").insert({ id, invoice_id: invId, returned: true, delivery_fee_note: reason });
+    if(error) throw error;
+    const inv = courierData.invoices.find(i=>i.id===invId);
+    if(inv) inv.nonReceiptReason = reason;
+    nonReceiptPromptId = null;
+    render();
+  }catch(e){
+    alert("تعذّر حفظ السبب: " + (e && e.message ? e.message : e));
+  }
+}
+async function revertNonReceiptCourier(invId){
+  try{
+    const id = "crt_" + Date.now() + Math.random().toString(36).slice(2,8);
+    const { error } = await supabaseClient.from("courier_returns").insert({ id, invoice_id: invId, returned: false, delivery_fee_note: "" });
+    if(error) throw error;
+    const inv = courierData.invoices.find(i=>i.id===invId);
+    if(inv) inv.nonReceiptReason = "";
+    render();
+  }catch(e){
+    alert("تعذّر التراجع: " + (e && e.message ? e.message : e));
+  }
+}
 function renderDeliveredSummary(inv){
   const cr = inv.courierResolution;
   if(!cr) return "";
@@ -219,7 +269,7 @@ function renderDeliveredSummary(inv){
 }
 
 function setTab(tab){ activeTab = tab; render(); }
-function logout(){ loggedInName = ""; loggedInType = ""; settlingId = null; returningId = null; render(); }
+function logout(){ loggedInName = ""; loggedInType = ""; settlingId = null; nonReceiptPromptId = null; render(); }
 async function refreshData(){
   await loadInvoices();
 }
@@ -259,7 +309,7 @@ function openSettle(invId){
   const inv = courierData.invoices.find(i=>i.id===invId);
   if(!inv) return;
   settlingId = invId;
-  returningId = null;
+  nonReceiptPromptId = null;
   const cr = inv.courierResolution;
   settleItems = inv.items.map(it=>{
     const claimed = cr ? cr.items.find(x=>x.catId===it.catId && x.color===it.color) : null;
@@ -301,6 +351,7 @@ function renderSettleBox(inv){
       ${qtyRows}
       <div class="total-line" style="margin-top:8px;"><span>إجمالي المبيعات</span><span>${fmt(soldTotal)}</span></div>
 
+      ${soldTotal>0 ? `
       <div class="section-title" style="font-size:13px;margin-top:12px;">طريقة استلام المبلغ</div>
       <div class="field" style="display:flex;gap:6px;">
         <select id="st_pay_account" style="flex:1;">
@@ -312,7 +363,8 @@ function renderSettleBox(inv){
       </div>
       <button class="btn secondary" style="width:100%;margin-bottom:8px;" onclick="addSettlePayment()">➕ أضف طريقة دفع</button>
       ${payLines}
-      <div class="total-line"><span>إجمالي المستلم</span><span>${fmt(paid)}</span></div>
+      <div class="total-line"><span>إجمالي المستلم</span><span>${fmt(paid)}</span></div>` : `
+      <div style="background:#FCEBD9;color:#B8600F;font-weight:700;font-size:12px;padding:8px;border-radius:8px;margin-top:10px;">🟠 هذه الطلبية مرتجعة بالكامل — لا حاجة لإدخال طريقة الدفع</div>`}
 
       <div class="field" style="margin-top:10px;">
         <div style="font-size:12.5px;color:var(--muted);">قيمة التوصيل (ثابتة): <b style="color:var(--text);">${fmt(inv.deliveryPrice||0)}</b></div>
