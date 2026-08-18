@@ -486,13 +486,29 @@ function clearSupabaseConfig(){
   if(courierReturnsChannel && supabaseClient){ try{ supabaseClient.removeChannel(courierReturnsChannel); }catch(e){} }
   if(courierSettlementsChannel && supabaseClient){ try{ supabaseClient.removeChannel(courierSettlementsChannel); }catch(e){} }
   supabaseClient = null; realtimeChannel = null; lastKnownUpdatedAt = null; onlineStoreChannel = null; courierReturnsChannel = null; courierSettlementsChannel = null;
+  currentSupabaseUrl = ""; currentSupabaseKey = "";
 }
+let currentSupabaseUrl = "";
+let currentSupabaseKey = "";
 function initSupabase(){
   const cfg = getSupabaseConfig();
   if(!cfg.url || !cfg.key) return false;
   if(typeof supabase === "undefined") return false;
-  try{ supabaseClient = supabase.createClient(cfg.url, cfg.key); return true; }
+  try{ supabaseClient = supabase.createClient(cfg.url, cfg.key); currentSupabaseUrl = cfg.url; currentSupabaseKey = cfg.key; return true; }
   catch(e){ console.error("Supabase init failed", e); return false; }
+}
+async function sendAdminTelegramNotification(message){
+  try{
+    if(!supabaseClient || !currentSupabaseUrl || !currentSupabaseKey) return;
+    const functionUrl = currentSupabaseUrl.replace(/\/$/, "") + "/functions/v1/telegram-notify";
+    await fetch(functionUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + currentSupabaseKey, "apikey": currentSupabaseKey },
+      body: JSON.stringify({ message })
+    });
+  }catch(e){
+    console.error("Telegram notification failed", e);
+  }
 }
 function setupRealtimeSync(){
   if(!supabaseClient) return;
@@ -2705,6 +2721,12 @@ function savePendingInvoice(){
     };
     state.pendingInvoices.push(invoice);
     logActivity(`فاتورة #${invoice.number} (${cityGroupLabel(cityGroup)}) — ${invoice.items.length} صنف بإجمالي ${fmtNum(invoice.totalAmount)}${check.ok?"":" — بها نواقص في المخزون، لم يُحجز شيء"}`);
+    sendAdminTelegramNotification(
+      `🆕 <b>طلب جديد #${invoice.number}</b>\n` +
+      `📍 ${cityGroupLabel(cityGroup)}${zone?" — "+zone:""}${otherCityName?" — "+otherCityName:""}\n` +
+      `📞 ${phone1||"-"}\n` +
+      `💰 الإجمالي: ${fmtNum(invoice.totalAmount)}`
+    );
   }
   pdDraftItems = [];
   pdDraftDate = null; pdDraftCityGroup = "tripoli"; pdDraftPhone1 = ""; pdDraftPhone2 = ""; pdDraftZone = ""; pdDraftDeliveryPrice = ""; pdDraftOtherCityName = ""; pdDraftOtherZone = ""; pdDraftCity = ""; pdDraftNotes = "";
@@ -2808,6 +2830,12 @@ async function confirmAssignCourier(){
   inv.courierName = courierName;
   inv.deliveryStage = "in_delivery";
   logActivity(`تحويل الفاتورة #${inv.number} للتوصيل مع ${type==="owner"?"صاحب المتجر بهاء":courierName}`);
+  sendAdminTelegramNotification(
+    `🚚 <b>الفاتورة #${inv.number} أصبحت قيد التوصيل</b>\n` +
+    `👤 ${type==="owner"?"صاحب المتجر بهاء":(type==="rep"?"المندوب: "+courierName:"شركة: "+courierName)}\n` +
+    `📞 ${inv.phone1||"-"}\n` +
+    `💰 الإجمالي: ${fmtNum(inv.totalAmount)}`
+  );
   assigningInvoiceId = null; assignCourierType = "owner"; assignSelectedId = ""; assignNewName = ""; assignNewPin = "";
   await saveState();
   render();
