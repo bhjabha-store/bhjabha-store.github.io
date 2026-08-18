@@ -66,6 +66,18 @@ td{padding:6px;border-bottom:1px solid var(--border);}
 // ============ SUPABASE CONFIGURATION ============
 const SUPABASE_URL = "https://wgodzednsugquxfnhqiw.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_Ae_4_ZfZDnwtgGWuJ17B3g_a_CP34UZ";
+async function sendAdminTelegramNotification(message){
+  try{
+    const functionUrl = SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/telegram-notify";
+    await fetch(functionUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + SUPABASE_ANON_KEY, "apikey": SUPABASE_ANON_KEY },
+      body: JSON.stringify({ message })
+    });
+  }catch(e){
+    console.error("Telegram notification failed", e);
+  }
+}
 
 let supabaseClient = null;
 let courierData = { invoices: [], reps: [], companies: [] };
@@ -304,6 +316,11 @@ async function submitNonReceipt(invId){
     saveOverride(invId, {nonReceiptReason: reason});
     nonReceiptPromptId = null;
     render();
+    sendAdminTelegramNotification(
+      `🔴 <b>الفاتورة #${inv?inv.number:"-"} — عدم استلام الزبون</b>\n` +
+      `👤 المندوب: ${loggedInName}\n` +
+      `📝 السبب: ${reason}`
+    );
   }catch(e){
     alert("تعذّر حفظ السبب: " + (e && e.message ? e.message : e));
   }
@@ -495,6 +512,17 @@ async function submitSettlement(invId){
     settlingId = null;
     activeTab = "delivered";
     render();
+    const totalOrigQty = inv ? inv.items.reduce((s,it)=>s+(Number(it.qty)||0),0) : 0;
+    const totalSoldQty = settleItems.reduce((s,it)=>s+(Number(it.soldQty)||0),0);
+    let statusLabel, emoji;
+    if(totalOrigQty>0 && totalSoldQty===0){ statusLabel = "مرتجع بالكامل"; emoji = "🟠"; }
+    else if(totalSoldQty<totalOrigQty){ statusLabel = "مرتجع جزئي"; emoji = "🟡"; }
+    else { statusLabel = "تم التسليم بالكامل"; emoji = "🟢"; }
+    sendAdminTelegramNotification(
+      `${emoji} <b>الفاتورة #${inv?inv.number:"-"} — ${statusLabel}</b>\n` +
+      `👤 المندوب: ${loggedInName}\n` +
+      `💰 المبلغ: ${fmt(soldTotal)}`
+    );
     alert("تم إرسال التسوية بنجاح ✅ سيراجعها صاحب المتجر قريباً");
   }catch(e){
     alert("تعذّر إرسال التسوية: " + (e && e.message ? e.message : e));
