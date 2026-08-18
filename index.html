@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
@@ -123,6 +124,18 @@ html, body{height:100%;}
 // ============ SUPABASE CONFIGURATION ============
 const SUPABASE_URL = "https://wgodzednsugquxfnhqiw.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_Ae_4_ZfZDnwtgGWuJ17B3g_a_CP34UZ";
+async function sendAdminTelegramNotification(message){
+  try{
+    const functionUrl = SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/telegram-notify";
+    await fetch(functionUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + SUPABASE_ANON_KEY, "apikey": SUPABASE_ANON_KEY },
+      body: JSON.stringify({ message })
+    });
+  }catch(e){
+    console.error("Telegram notification failed", e);
+  }
+}
 
 let supabaseClient = null;
 let catalog = [];
@@ -399,8 +412,14 @@ async function submitOrder(){
     const id = "ord_" + Date.now() + Math.random().toString(36).slice(2,8);
     const { error } = await supabaseClient.from("customer_orders").insert({ id, order_data: orderData, status: "new" });
     if(error) throw error;
+    const totalValue = cart.reduce((s,c)=>s+c.qty*c.price,0);
+    sendAdminTelegramNotification(
+      `🛍 <b>طلب جديد من المتجر الإلكتروني</b>\n` +
+      `📞 ${phone1}\n` +
+      `💰 الإجمالي: ${fmt(totalValue)} د.ل\n` +
+      `📦 عدد القطع: ${cart.reduce((s,c)=>s+c.qty,0)}`
+    );
     if(typeof fbq !== "undefined"){
-      const totalValue = cart.reduce((s,c)=>s+c.qty*c.price,0);
       fbq('track', 'Purchase', {
         content_ids: cart.map(c=>c.catId), content_type: 'product',
         num_items: cart.reduce((s,c)=>s+c.qty,0), value: totalValue, currency: 'LYD'
