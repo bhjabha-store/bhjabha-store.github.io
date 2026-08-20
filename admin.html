@@ -197,7 +197,7 @@ details ul{margin:6px 0 0;padding-right:16px;font-size:12px;color:var(--muted);}
   .no-print{display:none !important;}
 }
 .viewer-badge{position:fixed;top:calc(10px + env(safe-area-inset-top));left:10px;background:var(--gold);color:#fff;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:700;z-index:700;box-shadow:0 2px 8px rgba(0,0,0,.15);}
-.login-gate{position:fixed;inset:0;background:var(--surface);z-index:10000;display:flex;align-items:center;justify-content:center;}
+.login-gate{position:fixed;inset:0;background:var(--surface);z-index:9000;display:flex;align-items:center;justify-content:center;}
 .login-box{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:32px;width:340px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.12);}
 .login-box .brand-mark{width:52px;height:52px;border-radius:12px;background:linear-gradient(135deg,var(--wine),var(--gold));display:flex;align-items:center;justify-content:center;font-size:26px;margin:0 auto 14px;}
 .login-box h2{margin:0 0 4px;font-size:17px;color:var(--ink);}
@@ -473,11 +473,11 @@ let lastKnownUpdatedAt = null;
 let applyingRemoteUpdate = false;
 
 function getSupabaseConfig(){
-  try{ return { url: localStorage.getItem("bh_supabase_url")||"", key: localStorage.getItem("bh_supabase_key")||"" }; }
-  catch(e){ return {url:"", key:""}; }
+  try{ return { url: localStorage.getItem("bh_supabase_url")||"", key: localStorage.getItem("bh_supabase_key")||"", email: localStorage.getItem("bh_supabase_email")||"" }; }
+  catch(e){ return {url:"", key:"", email:""}; }
 }
-function saveSupabaseConfig(url, key){
-  try{ localStorage.setItem("bh_supabase_url", url); localStorage.setItem("bh_supabase_key", key); }catch(e){}
+function saveSupabaseConfig(url, key, email){
+  try{ localStorage.setItem("bh_supabase_url", url); localStorage.setItem("bh_supabase_key", key); if(email) localStorage.setItem("bh_supabase_email", email); }catch(e){}
 }
 function clearSupabaseConfig(){
   try{ localStorage.removeItem("bh_supabase_url"); localStorage.removeItem("bh_supabase_key"); }catch(e){}
@@ -615,6 +615,64 @@ async function storageSet(key, val){
 
 async function loadState(){
   initSupabase();
+  if(supabaseClient){
+    try{
+      const { data: sessionData } = await supabaseClient.auth.getSession();
+      if(!sessionData || !sessionData.session){
+        renderCloudSigninGate();
+        return;
+      }
+    }catch(e){
+      // if the auth check itself fails unexpectedly, fall through and let the normal data
+      // fetch below surface the real error rather than silently blocking the app
+    }
+  }
+  await finishLoadState();
+}
+function renderCloudSigninGate(){
+  const cfg = getSupabaseConfig();
+  const gate = document.createElement("div");
+  gate.id = "cloudSigninGate";
+  gate.className = "login-gate";
+  gate.innerHTML = `
+    <div class="login-box">
+      <div class="brand-mark">☁️</div>
+      <h2>${esc(STORE_NAME)}</h2>
+      <p>سجّل الدخول لحساب المدير للوصول لقاعدة البيانات السحابية</p>
+      <input type="email" id="cloudEmail" placeholder="البريد الإلكتروني" value="${esc(cfg.email||'')}">
+      <input type="password" id="cloudPassword" placeholder="كلمة السر">
+      <div class="role-btns">
+        <button class="btn-admin" onclick="signInAdminCloud()" style="width:100%;">تسجيل الدخول</button>
+      </div>
+      <div class="error" id="cloudLoginError"></div>
+      <div style="margin-top:14px;"><a href="#" onclick="skipCloudAndWorkLocally();return false;" style="font-size:11.5px;color:var(--muted);">العمل محلياً على هذا الجهاز فقط الآن</a></div>
+    </div>`;
+  document.body.appendChild(gate);
+}
+async function signInAdminCloud(){
+  const email = document.getElementById("cloudEmail").value.trim();
+  const password = document.getElementById("cloudPassword").value;
+  const errEl = document.getElementById("cloudLoginError");
+  if(!email || !password){ errEl.textContent = "أدخل البريد الإلكتروني وكلمة السر"; return; }
+  try{
+    const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    if(error) throw error;
+    saveSupabaseConfig(getSupabaseConfig().url, getSupabaseConfig().key, email);
+    const gate = document.getElementById("cloudSigninGate");
+    if(gate) gate.remove();
+    await finishLoadState();
+  }catch(e){
+    errEl.textContent = "فشل تسجيل الدخول: " + (e && e.message ? e.message : e);
+  }
+}
+async function skipCloudAndWorkLocally(){
+  if(!(await showCustomConfirm("سيعمل النظام على بيانات هذا الجهاز فقط دون مزامنة سحابية حتى تسجّل الدخول لاحقاً من صفحة الحسابات. هل تريد المتابعة؟"))) return;
+  supabaseClient = null;
+  const gate = document.getElementById("cloudSigninGate");
+  if(gate) gate.remove();
+  await finishLoadState();
+}
+async function finishLoadState(){
   try{
     const res = await storageGet(STORAGE_KEY);
     if(res && res.value){ state = JSON.parse(res.value); }
@@ -3429,52 +3487,9 @@ function renderInDeliveryPage(){
     <div class="section">
       <details style="margin-bottom:10px;">
         <summary>📋 إعداد رابط المندوبين (مرة واحدة فقط) — اضغط للعرض</summary>
-        <pre style="background:#F3EEE3;border-radius:8px;padding:12px;font-size:11px;overflow-x:auto;direction:ltr;text-align:left;margin:8px 0;">-- آمن للتشغيل بأي عدد من المرات، حتى لو كانت بعض الجداول موجودة مسبقاً
-
-create table if not exists courier_invoices (
-  id text primary key,
-  data jsonb not null default '{"invoices":[],"reps":[],"companies":[]}'::jsonb,
-  updated_at timestamptz not null default now()
-);
-insert into courier_invoices (id, data)
-  values ('main', '{"invoices":[],"reps":[],"companies":[]}'::jsonb)
-  on conflict (id) do nothing;
-alter table courier_invoices enable row level security;
-drop policy if exists "public read/write courier invoices" on courier_invoices;
-create policy "public read/write courier invoices" on courier_invoices for all using (true) with check (true);
-
-create table if not exists courier_settlements (
-  id text primary key,
-  invoice_id text not null,
-  settlement_data jsonb not null,
-  status text not null default 'new',
-  created_at timestamptz not null default now()
-);
-alter table courier_settlements enable row level security;
-drop policy if exists "public read/write courier settlements" on courier_settlements;
-create policy "public read/write courier settlements" on courier_settlements for all using (true) with check (true);
-
-create table if not exists courier_returns (
-  id text primary key,
-  invoice_id text not null,
-  returned boolean not null,
-  delivery_fee_note text,
-  created_at timestamptz not null default now()
-);
-alter table courier_returns enable row level security;
-drop policy if exists "public read/write courier returns" on courier_returns;
-create policy "public read/write courier returns" on courier_returns for all using (true) with check (true);
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_publication_tables
-    WHERE pubname = 'supabase_realtime' AND tablename = 'courier_returns'
-  ) THEN
-    ALTER PUBLICATION supabase_realtime ADD TABLE courier_returns;
-  END IF;
-END $$;</pre>
-        <div class="section-hint">بعد تنفيذ هذا الكود مرة واحدة في SQL Editor بمشروع Supabase، افتح ملف "بوابة المندوبين متجر بحجابها" المرفق، والصق فيه نفس رابط ومفتاح Supabase المستخدمين في هذا النظام، وشاركه مع أي مندوب.</div>
+        <div class="section-hint" style="line-height:1.9;">
+          إعداد جداول المندوبين أصبح جزءاً من الإعداد الموحّد لكامل قاعدة البيانات — افتح <b>صفحة "الحسابات" ← قسم "الاتصال بقاعدة بيانات سحابية"</b> ونفّذ كود SQL الموجود هناك (يغطي كل الجداول بما فيها جداول المندوبين دفعة واحدة). بعدها افتح ملف "بوابة المندوبين متجر بحجابها" المرفق، والصق فيه نفس رابط ومفتاح Supabase المستخدمين في هذا النظام، وشاركه مع أي مندوب.
+        </div>
       </details>
       <div class="section-hint">محوَّلة لصاحب المتجر أو مندوب/شركة توصيل، بانتظار تسليمها للزبون (عبر رابط المندوب أو تسجيل يدوي)</div>
       <button class="btn secondary viewer-safe" onclick="syncCourierSettlements(); catchUpCourierReturns();">🔄 تحديث من المندوبين</button>
@@ -3694,69 +3709,162 @@ function renderAccounts(){
         <summary>📋 خطوات الإعداد (اضغط للعرض) — تُنفَّذ مرة واحدة فقط</summary>
         <ol style="font-size:12.5px;color:var(--text);line-height:1.9;padding-right:18px;margin-top:10px;">
           <li>أنشئ حساباً مجانياً على <b>supabase.com</b> ثم أنشئ مشروعاً جديداً (اختر أي اسم وكلمة مرور لقاعدة البيانات، واحفظها جانباً).</li>
-          <li>من داخل المشروع، افتح <b>SQL Editor</b> من القائمة الجانبية، الصق الكود التالي بالكامل، ثم اضغط <b>Run</b>:</li>
+          <li>من <b>Authentication ← Users</b> اضغط "Add user"، وأدخل بريدك الإلكتروني وكلمة سر قوية — هذا هو حساب المدير الحقيقي الذي يمنحك وحدك صلاحية القراءة والكتابة الكاملة.</li>
+          <li>من <b>SQL Editor</b>، الصق الكود التالي بالكامل واضغط <b>Run</b> (آمن للتنفيذ أكثر من مرة إذا سبق وأنشأت بعض الجداول):</li>
         </ol>
-        <pre style="background:#F3EEE3;border-radius:8px;padding:12px;font-size:11.5px;overflow-x:auto;direction:ltr;text-align:left;margin:8px 0;">create table app_state (
+        <pre style="background:#F3EEE3;border-radius:8px;padding:12px;font-size:11.5px;overflow-x:auto;direction:ltr;text-align:left;margin:8px 0;">create table if not exists app_state (
+  id text primary key,
+  data jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+insert into app_state (id, data) values ('main', '{}'::jsonb) on conflict (id) do nothing;
+
+create table if not exists public_catalog (
   id text primary key,
   data jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now()
 );
 
-insert into app_state (id, data) values ('main', '{}'::jsonb);
+create table if not exists customer_orders (
+  id text primary key,
+  order_data jsonb not null,
+  status text not null default 'new',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists state_backups (
+  id text primary key,
+  data jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists courier_invoices (
+  id text primary key,
+  data jsonb not null default '{"invoices":[],"reps":[],"companies":[]}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+insert into courier_invoices (id, data) values ('main', '{"invoices":[],"reps":[],"companies":[]}'::jsonb) on conflict (id) do nothing;
+
+create table if not exists courier_settlements (
+  id text primary key,
+  invoice_id text not null,
+  settlement_data jsonb not null,
+  status text not null default 'new',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists courier_returns (
+  id text primary key,
+  invoice_id text not null,
+  returned boolean not null,
+  delivery_fee_note text,
+  created_at timestamptz not null default now()
+);
 
 alter table app_state enable row level security;
+alter table public_catalog enable row level security;
+alter table customer_orders enable row level security;
+alter table state_backups enable row level security;
+alter table courier_invoices enable row level security;
+alter table courier_settlements enable row level security;
+alter table courier_returns enable row level security;
 
-create policy "allow anon read/write"
-  on app_state for all
-  using (true)
-  with check (true);
+-- يمسح أي سياسات قديمة مفتوحة بالكامل على هذه الجداول، بغض النظر عن اسمها،
+-- حتى لا تبقى سياسة "allow all" قديمة تُبطل تأثير السياسات الدقيقة الجديدة أدناه
+DO $$
+DECLARE pol record;
+BEGIN
+  FOR pol IN SELECT policyname, tablename FROM pg_policies
+    WHERE schemaname='public' AND tablename IN
+      ('app_state','public_catalog','customer_orders','state_backups','courier_invoices','courier_settlements','courier_returns')
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON %I', pol.policyname, pol.tablename);
+  END LOOP;
+END $$;
 
-alter publication supabase_realtime add table app_state;</pre>
-        <ol start="3" style="font-size:12.5px;color:var(--text);line-height:1.9;padding-right:18px;">
+-- app_state: بيانات المتجر الكاملة — المدير فقط، لا قراءة ولا كتابة عامة إطلاقاً
+create policy "admin only select" on app_state for select using (auth.role() = 'authenticated');
+create policy "admin only insert" on app_state for insert with check (auth.role() = 'authenticated');
+create policy "admin only update" on app_state for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "admin only delete" on app_state for delete using (auth.role() = 'authenticated');
+
+-- public_catalog: قراءة عامة (يحتاجها المتجر الإلكتروني)، كتابة للمدير فقط
+create policy "public read catalog" on public_catalog for select using (true);
+create policy "admin write catalog" on public_catalog for insert with check (auth.role() = 'authenticated');
+create policy "admin update catalog" on public_catalog for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
+-- customer_orders: أي زبون يضيف طلباً، لكن لا يقرأ طلبات غيره؛ المدير فقط يقرأ/يعدّل/يحذف
+create policy "public insert orders" on customer_orders for insert with check (true);
+create policy "admin read orders" on customer_orders for select using (auth.role() = 'authenticated');
+create policy "admin update orders" on customer_orders for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "admin delete orders" on customer_orders for delete using (auth.role() = 'authenticated');
+
+-- state_backups: المدير فقط بالكامل
+create policy "admin read backups" on state_backups for select using (auth.role() = 'authenticated');
+create policy "admin write backups" on state_backups for insert with check (auth.role() = 'authenticated');
+
+-- courier_invoices: قراءة عامة (تحتاجها بوابة المندوبين)، كتابة للمدير فقط (هو من ينشرها)
+create policy "public read courier_invoices" on courier_invoices for select using (true);
+create policy "admin write courier_invoices" on courier_invoices for insert with check (auth.role() = 'authenticated');
+create policy "admin update courier_invoices" on courier_invoices for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
+-- courier_settlements: أي مندوب يضيف تسويته، لكن لا يقرأ تسويات غيره؛ المدير فقط يقرأ/يعالج
+create policy "public insert settlements" on courier_settlements for insert with check (true);
+create policy "admin read settlements" on courier_settlements for select using (auth.role() = 'authenticated');
+create policy "admin update settlements" on courier_settlements for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
+-- courier_returns: أي مندوب يضيف إشعار عدم استلام، لكن لا يقرأ إشعارات غيره؛ المدير فقط يقرأ
+create policy "public insert returns" on courier_returns for insert with check (true);
+create policy "admin read returns" on courier_returns for select using (auth.role() = 'authenticated');
+
+alter publication supabase_realtime add table app_state;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname='supabase_realtime' AND tablename='customer_orders') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE customer_orders;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname='supabase_realtime' AND tablename='public_catalog') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public_catalog;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname='supabase_realtime' AND tablename='courier_returns') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE courier_returns;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname='supabase_realtime' AND tablename='courier_settlements') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE courier_settlements;
+  END IF;
+END $$;</pre>
+        <ol start="4" style="font-size:12.5px;color:var(--text);line-height:1.9;padding-right:18px;">
           <li>من القائمة الجانبية اذهب إلى <b>Project Settings ← API</b>.</li>
           <li>انسخ قيمة <b>Project URL</b> والصقها في خانة "رابط المشروع" أدناه.</li>
           <li>انسخ قيمة <b>anon public</b> (أو "publishable key" في الواجهات الأحدث) والصقها في خانة "المفتاح العلني" أدناه.</li>
-          <li>اضغط "🔌 اتصال وحفظ". من الآن فصاعداً تُحفظ كل بياناتك على هذه القاعدة، وتُفتح تلقائياً من أي جهاز تدخل منه بنفس الرابط والمفتاح.</li>
+          <li>أدخل بريد وكلمة سر حساب المدير الذي أنشأته في الخطوة 2، ثم اضغط "🔌 اتصال وتسجيل الدخول".</li>
         </ol>
-        <div class="hint-box hint-warn" style="margin-top:8px;">
-          ⚠ سياسة الصلاحيات أعلاه (RLS) تسمح لأي شخص يملك هذا الرابط والمفتاح بقراءة وتعديل البيانات — وهذا طبيعي لتطبيق بسيط بمستخدم واحد، لكن لا تُشارك رابط ومفتاح مشروعك مع أحد لا تثق به. هذا منفصل تماماً عن كلمة مرور "المدير/المشاهد" الخاصة بالنظام أدناه.
+        <div class="hint-box hint-ok" style="margin-top:8px;">
+          ✅ الآن فقط حسابك الموثّق (بريدك وكلمة سرّك) يقدر يقرأ أو يعدّل بيانات متجرك الكاملة. المتجر الإلكتروني وبوابة المندوبين ما زالا يعملان بشكل طبيعي (يقرآن فقط ما يحتاجانه، ويضيف كل منهما طلباته/تسوياته دون رؤية بيانات غيره) — دون الحاجة لأي حساب دخول.
         </div>
       </details>
       <div class="form-row">
         <div class="field"><label>رابط المشروع (Project URL)</label><input type="text" id="sb_url" value="${esc(getSupabaseConfig().url)}" placeholder="https://xxxxx.supabase.co"></div>
         <div class="field"><label>المفتاح العلني (anon / publishable key)</label><input type="text" id="sb_key" value="${esc(getSupabaseConfig().key)}" placeholder="eyJhbGciOi..."></div>
       </div>
+      <div class="form-row">
+        <div class="field"><label>البريد الإلكتروني لحساب المدير</label><input type="email" id="sb_email" value="${esc(getSupabaseConfig().email||'')}" placeholder="you@example.com"></div>
+        <div class="field"><label>كلمة سر الحساب</label><input type="password" id="sb_password" placeholder="كلمة سر حساب Supabase Auth"></div>
+      </div>
+      <div class="section-hint" style="margin:-6px 0 10px;">هذا البريد وكلمة السر لا علاقة لهما بكلمة مرور "المدير/المشاهد" أدناه — هذا حساب دخول حقيقي تُنشئه من Supabase ← Authentication ← Users، وهو ما يمنح الصلاحية الفعلية للقراءة والكتابة في قاعدة البيانات.</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <button class="btn" onclick="connectSupabase()">🔌 اتصال وحفظ</button>
+        <button class="btn" onclick="connectSupabase()">🔌 اتصال وتسجيل الدخول</button>
         ${supabaseClient ? `<button class="btn ghost" onclick="disconnectSupabase()">قطع الاتصال (العمل محلياً)</button>` : ""}
       </div>
     </div>
     <div class="section">
       <div class="section-title">🔒 الأمان وكلمات المرور</div>
-      <div class="section-hint">فعّل تسجيل الدخول بتعيين كلمة مرور المدير — بعدها سيُطلب من أي شخص يفتح النظام اختيار الدخول كمدير (كل الصلاحيات) أو كمشاهد فقط (بدون أي تعديل). اترك كلمة مرور المشاهد فارغة للسماح بالدخول كمشاهد بدون كلمة مرور.</div>
+      <div class="section-hint">فعّل تسجيل الدخول بتعيين كلمة مرور المدير — بعدها سيُطلب من أي شخص يفتح النظام اختيار الدخول كمدير (كل الصلاحيات) أو كمشاهد فقط (بدون أي تعديل). اترك كلمة مرور المشاهد فارغة للسماح بالدخول كمشاهد بدون كلمة مرور. هذه كلمة مرور خفيفة داخل التطبيق فقط — الحماية الحقيقية لقاعدة البيانات هي حساب Supabase Auth أعلاه.</div>
       <div class="form-row">
         <div class="field"><label>كلمة مرور المدير</label><input type="password" id="admin_pw" placeholder="${state.settings.adminPassword?'●●●●●●● (مُعيّنة)':'غير مُعيّنة'}"></div>
         <div class="field"><label>كلمة مرور المشاهد (اختياري)</label><input type="password" id="viewer_pw" placeholder="${state.settings.viewerPassword?'●●●●●●● (مُعيّنة)':'بدون كلمة مرور'}"></div>
       </div>
       <button class="btn" onclick="updatePasswords()">💾 حفظ كلمات المرور</button>
-      <details style="margin-top:14px;">
-        <summary>🔐 تريد حماية أقوى من كلمة مرور بسيطة؟ (اضغط للتفاصيل)</summary>
-        <div class="section-hint" style="margin-top:10px;line-height:1.9;">
-          كلمة المرور الحالية تُتحقق منها داخل المتصفح فقط — كافية لمنع التعديل العرضي، لكن أي شخص يفهم بأدوات المطوّر يقدر يتجاوزها. أما صلاحيات Supabase الحالية فهي مفتوحة بالكامل لأي شخص يملك الرابط والمفتاح.<br><br>
-          الحل الحقيقي هو <b>Supabase Auth</b> (تسجيل دخول حقيقي يتحقق منه الخادم نفسه)، مقترن بسياسات RLS صارمة. هذه خطوة أكبر تحتاج تنفيذك المباشر في لوحة Supabase (لا يمكن تفعيلها من داخل هذا الملف لتفادي قفلك خارج بياناتك بالخطأ). الخطوات:
-          <ol style="padding-right:18px;margin-top:6px;">
-            <li>في لوحة Supabase ← Authentication ← Users ← أضف مستخدماً ببريدك وكلمة مرور قوية</li>
-            <li>في SQL Editor نفّذ سياسة RLS تسمح بالتعديل فقط لمستخدم مسجّل دخول:
-              <pre style="background:#F3EEE3;border-radius:8px;padding:10px;font-size:11px;overflow-x:auto;direction:ltr;text-align:left;margin:6px 0;">drop policy if exists "allow all for anon" on app_state;
-create policy "read for all" on app_state for select using (true);
-create policy "write for authenticated only" on app_state for all
-  using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');</pre>
-            </li>
-            <li>كرّر نفس فكرة السياسة على جدول <code>state_backups</code> إذا أردت حمايته أيضاً</li>
-          </ol>
-          ⚠ نفّذ هذا بحذر وبعد أخذ نسخة احتياطية — إذا أخطأت في السياسة قد تُقفل من الكتابة على بياناتك الخاصة. أخبرني إذا أردت مساعدتي في صياغة سياسة مطابقة لاستخدامك بالضبط.
-        </div>
-      </details>
     </div>
     <div class="section">
       <div class="section-title">🔁 تحويل بين الحسابات</div>
@@ -3804,10 +3912,22 @@ function setAccountMainTab(key){ accountMainTab = key; render(); }
 async function connectSupabase(){
   const url = document.getElementById("sb_url").value.trim();
   const key = document.getElementById("sb_key").value.trim();
+  const email = document.getElementById("sb_email").value.trim();
+  const password = document.getElementById("sb_password").value;
   if(!url || !key){ alert("يرجى إدخال رابط المشروع والمفتاح"); return; }
-  saveSupabaseConfig(url, key);
+  if(!email || !password){ alert("يرجى إدخال البريد الإلكتروني وكلمة السر لحساب المدير (أنشأته من Supabase ← Authentication ← Users)"); return; }
+  saveSupabaseConfig(url, key, email);
   const ok = initSupabase();
   if(!ok){ alert("تعذّر تهيئة الاتصال. تأكد من صحة الرابط والمفتاح، ومن اتصال الإنترنت."); return; }
+  try{
+    const { error: authError } = await supabaseClient.auth.signInWithPassword({ email, password });
+    if(authError) throw authError;
+  }catch(e){
+    supabaseClient = null;
+    alert("تعذّر تسجيل الدخول: " + (e && e.message ? e.message : e) + "\n\nتأكد من إنشاء المستخدم في Supabase ← Authentication ← Users أولاً، وأن البريد وكلمة السر صحيحان.");
+    render();
+    return;
+  }
   try{
     const { data, error } = await supabaseClient.from("app_state").select("data, updated_at").eq("id", STATE_ROW_ID).maybeSingle();
     if(error) throw error;
@@ -3836,6 +3956,7 @@ async function connectSupabase(){
 }
 async function disconnectSupabase(){
   if(!(await showCustomConfirm("سيتوقف النظام عن المزامنة السحابية ويعمل محلياً على هذا الجهاز فقط. هل تريد المتابعة؟"))) return;
+  try{ if(supabaseClient) await supabaseClient.auth.signOut(); }catch(e){}
   clearSupabaseConfig();
   render();
 }
@@ -4501,36 +4622,9 @@ function renderOnlineStoreAdmin(){
     <div class="section">
       <div class="section-title">📋 خطوات الإعداد (مرة واحدة فقط)</div>
       <details>
-        <summary>اضغط للعرض — يتطلب إنشاء جدولين إضافيين في نفس مشروع Supabase المتصل بالفعل</summary>
-        <ol style="font-size:12.5px;color:var(--text);line-height:1.9;padding-right:18px;margin-top:10px;">
-          <li>افتح <b>SQL Editor</b> في مشروع Supabase (نفس المشروع المتصل به النظام)، الصق الكود التالي، واضغط <b>Run</b>:</li>
-        </ol>
-        <pre style="background:#F3EEE3;border-radius:8px;padding:12px;font-size:11.5px;overflow-x:auto;direction:ltr;text-align:left;margin:8px 0;">create table public_catalog (
-  id text primary key,
-  data jsonb not null default '[]'::jsonb,
-  updated_at timestamptz not null default now()
-);
-insert into public_catalog (id, data) values ('main', '[]'::jsonb);
-alter table public_catalog enable row level security;
-create policy "public read/write catalog" on public_catalog for all using (true) with check (true);
-
-create table customer_orders (
-  id text primary key,
-  order_data jsonb not null,
-  status text not null default 'new',
-  created_at timestamptz not null default now()
-);
-alter table customer_orders enable row level security;
-create policy "public read/write orders" on customer_orders for all using (true) with check (true);
-
-alter publication supabase_realtime add table customer_orders;
-alter publication supabase_realtime add table public_catalog;</pre>
-        <ol start="2" style="font-size:12.5px;color:var(--text);line-height:1.9;padding-right:18px;">
-          <li>افتح ملف "متجر بحجابها - واجهة الزبائن" المرفق، والصق فيه نفس رابط ومفتاح Supabase المستخدمين في هذا النظام (من صفحة الحسابات).</li>
-          <li>ارفع الملف على أي استضافة مجانية (مثل GitHub Pages) أو شاركه مباشرة مع زبائنك.</li>
-        </ol>
-        <div class="hint-box hint-warn" style="margin-top:8px;">
-          ⚠ سياسة الصلاحيات أعلاه تسمح لأي شخص لديه رابط ومفتاح مشروعك بقراءة الكتالوج وإرسال طلبات — مناسب لمتجر صغير يُشارك رابطه مع زبائن معروفين، وليس متجراً عاماً كبيراً. طلبات الزبائن لا تصل لبياناتك المالية أو فواتيرك الفعلية إطلاقاً — فقط تظهر هنا لتوافق عليها أنت أولاً.
+        <summary>اضغط للعرض</summary>
+        <div class="section-hint" style="line-height:1.9;">
+          إعداد جدولي المتجر الإلكتروني (public_catalog و customer_orders) أصبح جزءاً من الإعداد الموحّد لكامل قاعدة البيانات — افتح <b>صفحة "الحسابات" ← قسم "الاتصال بقاعدة بيانات سحابية"</b> ونفّذ كود SQL الموجود هناك (يغطي كل الجداول دفعة واحدة). بعدها افتح ملف "متجر بحجابها - واجهة الزبائن" المرفق، والصق فيه نفس رابط ومفتاح Supabase المستخدمين في هذا النظام، وارفعه على أي استضافة مجانية أو شاركه مباشرة مع زبائنك.
         </div>
       </details>
     </div>
